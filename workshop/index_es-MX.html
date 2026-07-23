@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Containerizing ML Models on ECS and Fargate</title>
+    <style>
+        :root {
+            --aws-orange: #FF9900;
+            --aws-dark: #232F3E;
+            --aws-squid-ink: #161E2D;
+            --sidebar-width: 280px;
+            --content-max: 900px;
+            --code-bg: #1B2631;
+            --info-bg: #EBF5FB;
+            --info-border: #2E86C1;
+            --warning-bg: #FEF9E7;
+            --warning-border: #F39C12;
+            --tip-bg: #EAFAF1;
+            --tip-border: #27AE60;
+            --danger-bg: #FDEDEC;
+            --danger-border: #E74C3C;
+            --font-main: -apple-system, BlinkMacSystemFont, "Amazon Ember", "Segoe UI", Roboto, sans-serif;
+            --font-mono: "SFMono-Regular", "Fira Code", Consolas, "Liberation Mono", Menlo, monospace;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: var(--font-main);
+            font-size: 16px;
+            line-height: 1.7;
+            color: #333;
+            background: #FAFAFA;
+        }
+        .topbar {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 56px;
+            background: var(--aws-dark);
+            display: flex;
+            align-items: center;
+            padding: 0 24px;
+            z-index: 1000;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+        .topbar-logo {
+            color: white;
+            font-size: 18px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .topbar-logo .aws-mark { color: var(--aws-orange); font-weight: 900; }
+        .topbar-lang { margin-left: auto; display: flex; gap: 8px; }
+        .topbar-lang a {
+            color: #AAB7B8; text-decoration: none;
+            padding: 4px 12px; border-radius: 4px;
+            font-size: 13px; transition: all 0.2s;
+        }
+        .topbar-lang a:hover, .topbar-lang a.active { color: white; background: rgba(255,255,255,0.1); }
+        .sidebar {
+            position: fixed;
+            top: 56px; left: 0; bottom: 0;
+            width: var(--sidebar-width);
+            background: var(--aws-squid-ink);
+            overflow-y: auto;
+            padding: 20px 0;
+            z-index: 900;
+        }
+        .sidebar-nav a {
+            display: block; color: #D5DBDB; text-decoration: none;
+            padding: 10px 24px; font-size: 14px;
+            border-left: 3px solid transparent; transition: all 0.2s;
+        }
+        .sidebar-nav a:hover { background: rgba(255,255,255,0.05); color: white; }
+        .sidebar-nav a.active {
+            border-left-color: var(--aws-orange); color: white;
+            background: rgba(255,153,0,0.08); font-weight: 600;
+        }
+        .sidebar-nav .nav-section {
+            color: #7F8C8D; font-size: 11px; text-transform: uppercase;
+            letter-spacing: 1px; padding: 20px 24px 6px; font-weight: 700;
+        }
+        .main {
+            margin-left: var(--sidebar-width);
+            margin-top: 56px;
+            padding: 40px 60px;
+            max-width: calc(var(--content-max) + 120px + var(--sidebar-width));
+        }
+        h1 {
+            font-size: 2rem; color: var(--aws-dark);
+            margin-bottom: 16px; padding-bottom: 12px;
+            border-bottom: 3px solid var(--aws-orange);
+        }
+        h2 {
+            font-size: 1.5rem; color: var(--aws-dark);
+            margin-top: 48px; margin-bottom: 16px;
+            padding-bottom: 8px; border-bottom: 1px solid #E5E8E8;
+        }
+        h3 { font-size: 1.2rem; color: var(--aws-dark); margin-top: 32px; margin-bottom: 12px; }
+        h4 { font-size: 1rem; color: #566573; margin-top: 24px; margin-bottom: 8px; }
+        p { margin-bottom: 16px; }
+        a { color: var(--info-border); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        code {
+            font-family: var(--font-mono); font-size: 0.88em;
+            background: #F2F4F4; padding: 2px 6px;
+            border-radius: 3px; color: #C0392B;
+        }
+        pre {
+            background: var(--code-bg); border-radius: 6px;
+            padding: 20px 24px; overflow-x: auto;
+            margin: 16px 0 24px; border: 1px solid #2C3E50;
+        }
+        pre code {
+            background: none; color: #ECF0F1;
+            padding: 0; font-size: 0.85em; line-height: 1.6;
+        }
+        table { width: 100%; border-collapse: collapse; margin: 16px 0 24px; font-size: 0.9rem; }
+        th { background: var(--aws-dark); color: white; padding: 12px 16px; text-align: left; font-weight: 600; }
+        td { padding: 10px 16px; border-bottom: 1px solid #E5E8E8; }
+        tr:hover td { background: #F8F9F9; }
+        .callout {
+            border-left: 4px solid; border-radius: 4px;
+            padding: 16px 20px; margin: 20px 0; font-size: 0.9rem;
+        }
+        .callout-title {
+            font-weight: 700; margin-bottom: 6px;
+            font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .callout.info { background: var(--info-bg); border-color: var(--info-border); }
+        .callout.info .callout-title { color: var(--info-border); }
+        .callout.warning { background: var(--warning-bg); border-color: var(--warning-border); }
+        .callout.warning .callout-title { color: var(--warning-border); }
+        .callout.tip { background: var(--tip-bg); border-color: var(--tip-border); }
+        .callout.tip .callout-title { color: var(--tip-border); }
+        .callout.danger { background: var(--danger-bg); border-color: var(--danger-border); }
+        .callout.danger .callout-title { color: var(--danger-border); }
+        ul, ol { margin: 8px 0 16px 24px; }
+        li { margin-bottom: 6px; }
+        .badge {
+            display: inline-block; background: var(--aws-orange); color: white;
+            padding: 4px 12px; border-radius: 4px;
+            font-size: 0.8rem; font-weight: 600; margin-right: 8px;
+        }
+        .badge.level { background: #8E44AD; }
+        .badge.services { background: var(--info-border); }
+        .module-header {
+            background: linear-gradient(135deg, #232F3E 0%, #37474F 100%);
+            color: white; padding: 24px 28px;
+            border-radius: 8px; margin: 32px 0 24px;
+        }
+        .module-header h2 { color: white; border: none; margin: 0 0 8px; padding: 0; }
+        .module-header p { color: #B2BABB; margin: 0; font-size: 0.9rem; }
+        .file-tree {
+            background: #F8F9F9; border: 1px solid #E5E8E8;
+            border-radius: 6px; padding: 16px 20px;
+            font-family: var(--font-mono); font-size: 0.85rem;
+            margin: 16px 0; white-space: pre; line-height: 1.8;
+        }
+        @media (max-width: 1024px) {
+            .sidebar { display: none; }
+            .main { margin-left: 0; padding: 24px; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-logo"><span class="aws-mark">AWS</span> Workshop</div>
+  <div class="topbar-lang">
+    <a href="index.html">English</a>
+    <a href="index_es-MX.html" class="active">Español (MX)</a>
+  </div>
+</div>
+
+<nav class="sidebar">
+  <div class="sidebar-nav">
+    <div class="nav-section">Workshop</div>
+    <a href="#overview" class="active">Descripción General</a>
+    <a href="#introduction">Introducción</a>
+    <a href="#architecture">Arquitectura</a>
+    <a href="#prerequisites">Prerrequisitos</a>
+    <div class="nav-section">Módulos</div>
+    <a href="#module-1">1. Configuración del Entorno</a>
+    <a href="#module-2">2. Preparación de Datos</a>
+    <a href="#module-3">3. Entrenamiento del Modelo</a>
+    <a href="#module-4">4. Contenedorización</a>
+    <a href="#module-5">5. Despliegue en ECS</a>
+    <a href="#module-6">6. Pruebas</a>
+    <a href="#module-7">7. API Gateway</a>
+    <a href="#module-8">8. Limpieza</a>
+    <div class="nav-section">Referencia</div>
+    <a href="#changelog">Registro de Cambios</a>
+    <a href="#troubleshooting">Solución de Problemas</a>
+    <a href="#costs">Estimación de Costos</a>
+  </div>
+</nav>
+<div class="main">
+
+<!-- Overview Section -->
+<section id="overview">
+<h1>Containerizing ML Models on ECS and Fargate</h1>
+
+<p>
+  <span class="badge">~2.5-3 horas</span>
+  <span class="badge level">Nivel 300</span>
+</p>
+
+<h2>Descripción General del Workshop</h2>
+
+<p><strong>Propósito:</strong> Este workshop te enseña cómo llevar un modelo de ML entrenado desde el entorno de notebooks hasta una solución de alojamiento productiva y rentable usando contenedores. En lugar de depender de endpoints de inferencia de SageMaker que están activos todo el tiempo, aprenderás a empaquetar modelos en contenedores Docker ligeros y desplegarlos en infraestructura serverless — un patrón ideal para modelos con tráfico esporádico, tamaño limitado y sin necesidad de GPU.</p>
+
+<h3>Audiencia Objetivo</h3>
+<ul>
+  <li><strong>Data scientists</strong> que quieren llevar modelos de experimentación a producción sin administrar infraestructura</li>
+  <li><strong>Ingenieros de ML</strong> que buscan alternativas rentables a los endpoints real-time de SageMaker para modelos sencillos</li>
+  <li><strong>Arquitectos cloud</strong> que evalúan patrones de inferencia basados en contenedores en AWS</li>
+  <li><strong>Ingenieros DevOps</strong> que necesitan integrar modelos de ML en workloads existentes de ECS/Fargate</li>
+</ul>
+
+<div class="callout info">
+  <div class="callout-title">Prerequisitos</div>
+  <p>Los participantes deben sentirse cómodos con Python, tener familiaridad básica con servicios de AWS (S3, IAM), y entender conceptos fundamentales de ML (entrenamiento, inferencia, serialización de modelos). No se requiere experiencia previa con Docker, ECS o SageMaker — el workshop te guía paso a paso.</p>
+</div>
+
+<!-- Introduction Section -->
+<section id="introduction">
+<h2>Introducción</h2>
+
+<h3>¿Qué es XGBoost?</h3>
+<p>XGBoost (eXtreme Gradient Boosting) es una librería optimizada de gradient boosting diseñada para velocidad y rendimiento. Construye un conjunto de árboles de decisión de forma secuencial, donde cada nuevo árbol corrige los errores de los anteriores. XGBoost es ampliamente usado para tareas de regresión y clasificación por su capacidad de manejar datasets grandes, gestionar valores faltantes de forma nativa, y proveer regularización integrada para prevenir el sobreajuste.</p>
+
+<p><strong>Cómo funciona:</strong> XGBoost usa un enfoque de aprendizaje supervisado llamado gradient boosted trees. El modelo consiste en un ensamble de Árboles de Clasificación y Regresión (CARTs), donde la predicción final es la suma de los scores de todos los árboles individuales. El entrenamiento sigue una estrategia aditiva — en cada paso, se agrega un nuevo árbol que optimiza una función objetivo regularizada compuesta por una función de pérdida (que mide el error de predicción) y un término de regularización (que penaliza la complejidad del modelo con normas L1 y L2). El algoritmo usa gradient descent para minimizar la pérdida, calculando una aproximación de Taylor de segundo orden para encontrar de forma eficiente la mejor estructura de árbol en cada iteración. Sus innovaciones clave incluyen un algoritmo sparsity-aware para manejar valores faltantes, un weighted quantile sketch para encontrar splits aproximados, y estructuras de bloques cache-aware para procesamiento out-of-core.</p>
+
+<p>En este workshop, usamos el algoritmo integrado de XGBoost de SageMaker para entrenar un modelo de regresión que predice precios de viviendas en California basándose en características como ingreso mediano, ubicación y características de las viviendas. El modelo entrenado se exporta como un objeto pickle de Python, que puede ser cargado en cualquier entorno Python para hacer inferencia.</p>
+
+<div class="callout info">
+  <div class="callout-title">Referencias</div>
+  <ul>
+    <li>Chen, T., &amp; Guestrin, C. (2016). <em>XGBoost: A Scalable Tree Boosting System</em>. Proceedings of the 22nd ACM SIGKDD Conference on Knowledge Discovery and Data Mining. <a href="https://arxiv.org/abs/1603.02754">arXiv:1603.02754</a> | <a href="https://www.kdd.org/kdd2016/papers/files/rfp0697-chenAemb.pdf">KDD 2016 PDF</a></li>
+    <li><a href="https://xgboost.readthedocs.io/en/stable/tutorials/model.html">Introduction to Boosted Trees — Documentación Oficial de XGBoost</a></li>
+    <li><a href="https://docs.aws.amazon.com/sagemaker/latest/dg/xgboost-HowItWorks.html">How the SageMaker AI XGBoost Algorithm Works — Documentación de AWS</a></li>
+    <li><a href="https://docs.aws.amazon.com/sagemaker/latest/dg/xgboost.html">XGBoost Algorithm with Amazon SageMaker AI — Documentación de AWS</a></li>
+  </ul>
+</div>
+
+<h3>Desplegando Otros Modelos: ARIMA y SARIMA</h3>
+<p>El patrón de deployment en contenedores que se demuestra en este workshop no se limita a XGBoost. Cualquier modelo que pueda ser serializado (guardado a disco) y cargado en un proceso de Python puede desplegarse con el mismo enfoque. Dos ejemplos comunes en pronóstico de series de tiempo son:</p>
+
+<p><strong>ARIMA (AutoRegressive Integrated Moving Average):</strong> Un modelo estadístico para analizar y pronosticar datos de series de tiempo. ARIMA captura patrones en datos históricos combinando autoregresión (valores pasados), diferenciación (para hacer la serie estacionaria), y media móvil (errores pasados del pronóstico). Se usa comúnmente para pronóstico de demanda, predicción de precios de acciones y planeación de capacidad.</p>
+
+<p><strong>SARIMA (Seasonal ARIMA):</strong> Una extensión de ARIMA que agrega componentes estacionales al modelo. SARIMA es ideal para datos con patrones repetitivos en intervalos fijos — como ciclos mensuales de ventas, patrones semanales de tráfico, o variaciones anuales de temperatura.</p>
+
+<h4>Cómo adaptar este workshop para ARIMA/SARIMA:</h4>
+<ol>
+  <li><strong>Entrena tu modelo</strong> usando <code>statsmodels</code> (Python) y serialízalo con <code>pickle</code> o <code>joblib</code></li>
+  <li><strong>Reemplaza el archivo del modelo XGBoost</strong> en los artefactos del contenedor con tu archivo pickle de ARIMA/SARIMA</li>
+  <li><strong>Modifica el script de inferencia</strong> para cargar el modelo con <code>statsmodels</code> en lugar de <code>xgboost</code>, y ajusta la lógica de predicción para aceptar entrada de series de tiempo</li>
+  <li><strong>Actualiza <code>requirements.txt</code></strong> para incluir <code>statsmodels</code> en lugar de (o junto con) <code>xgboost</code></li>
+  <li><strong>Construye y despliega</strong> usando el mismo flujo de Docker, ECR, y ECS Fargate</li>
+</ol>
+
+<div class="callout tip">
+  <div class="callout-title">Punto Clave</div>
+  <p>El patrón de infraestructura central — servidor Flask en un contenedor en ECS Fargate detrás de API Gateway — permanece idéntico sin importar el framework de ML o tipo de modelo.</p>
+</div>
+
+<h3>Servicios de AWS Utilizados en Este Workshop</h3>
+<table>
+  <tr><th>Servicio</th><th>Rol en Este Workshop</th></tr>
+  <tr><td><strong>Amazon SageMaker</strong></td><td>Servicio de ML fully managed. Aquí se usa para correr jobs de entrenamiento de XGBoost en instancias de cómputo administradas. Se encarga del aprovisionamiento, entrenamiento y almacenamiento de artefactos de forma automática.</td></tr>
+  <tr><td><strong>Amazon S3</strong></td><td>Almacenamiento de objetos para datos de entrenamiento, validación y artefactos del modelo (<code>model.tar.gz</code>). Actúa como la capa durable de intercambio entre el entrenamiento y el despliegue.</td></tr>
+  <tr><td><strong>Amazon ECR</strong></td><td>Registro privado de imágenes Docker. Almacena la imagen del contenedor de inferencia para que ECS la descargue al lanzar la tarea. Soporta vulnerability scanning al hacer push.</td></tr>
+  <tr><td><strong>Amazon ECS</strong></td><td>Servicio de orquestación de contenedores que gestiona definiciones de tareas, configuración del cluster y ciclo de vida de las tareas. Coordina el despliegue de tu modelo contenedorizado.</td></tr>
+  <tr><td><strong>AWS Fargate</strong></td><td>Motor de cómputo serverless para ECS. Elimina la necesidad de aprovisionar o administrar instancias EC2 — tú defines los requerimientos de CPU/memoria y Fargate se encarga del resto.</td></tr>
+  <tr><td><strong>Amazon API Gateway</strong></td><td>Servicio de API administrado que provee endpoints HTTPS, throttling de peticiones y autenticación. Se pone frente a la tarea ECS para exponer el modelo como un API listo para producción.</td></tr>
+  <tr><td><strong>Amazon CloudWatch</strong></td><td>Servicio de monitoreo y logging. Recolecta los logs del contenedor mediante el driver <code>awslogs</code> y provee métricas para debugging y observabilidad.</td></tr>
+</table>
+</section>
+
+<p>En este workshop vas a entrenar un modelo de regresión XGBoost usando Amazon SageMaker, empaquetarlo en un contenedor Docker, desplegarlo en Amazon ECS con AWS Fargate, y exponerlo como una API REST a través de Amazon API Gateway.</p>
+
+<p><strong>Repositorio Fuente:</strong> <a href="https://github.com/UCdavidUC/amazon-sagemaker-xgboost-regression-model-hosting-on-amazon-ecs-fargate-and-amazon-api-gateway">UCdavidUC/amazon-sagemaker-xgboost-regression-model-hosting-on-amazon-ecs-fargate-and-amazon-api-gateway</a></p>
+
+<p><strong>Basado en:</strong> <a href="https://github.com/aws-samples/amazon-sagemaker-xgboost-regression-model-hosting-on-amazon-ecs-fargate-and-amazon-api-gateway">aws-samples/amazon-sagemaker-xgboost-regression-model-hosting-on-amazon-ecs-fargate-and-amazon-api-gateway</a> (actualizado para runtimes modernos de SageMaker y herramientas actuales)</p>
+
+<h3>Servicios de AWS Utilizados</h3>
+<ul>
+  <li>Amazon SageMaker (Entrenamiento)</li>
+  <li>Amazon S3 (Almacenamiento de Datos y Modelos)</li>
+  <li>Amazon ECR (Registro de Contenedores)</li>
+  <li>Amazon ECS con AWS Fargate (Alojamiento de Contenedores)</li>
+  <li>Amazon API Gateway (API REST)</li>
+  <li>Amazon CloudWatch (Logs)</li>
+</ul>
+
+<h3>Desglose de Tiempos por Módulo</h3>
+<table>
+  <tr><th>Módulo</th><th>Tiempo Práctico</th><th>Tiempo de Espera/Aprovisionamiento</th><th>Total</th></tr>
+  <tr><td>1. Configuración del Entorno</td><td>10 min</td><td>5 min (instalación de paquetes)</td><td>~15 min</td></tr>
+  <tr><td>2. Preparación de Datos</td><td>10 min</td><td>2 min (carga a S3)</td><td>~12 min</td></tr>
+  <tr><td>3. Entrenamiento del Modelo</td><td>5 min</td><td>5-8 min (aprovisionamiento + entrenamiento)</td><td>~10-13 min</td></tr>
+  <tr><td>4. Contenedorización</td><td>10 min</td><td>3-5 min (build de Docker + push a ECR)</td><td>~13-15 min</td></tr>
+  <tr><td>5. Despliegue en ECS</td><td>10 min</td><td>2-4 min (cluster + aprovisionamiento de tarea)</td><td>~12-14 min</td></tr>
+  <tr><td>6. Pruebas</td><td>10 min</td><td>1-2 min (configuración de Security Group)</td><td>~11-12 min</td></tr>
+  <tr><td>7. API Gateway</td><td>15 min</td><td>2 min (despliegue del API)</td><td>~17 min</td></tr>
+  <tr><td>8. Limpieza</td><td>5 min</td><td>1 min (eliminación de recursos)</td><td>~6 min</td></tr>
+  <tr><td><strong>Total</strong></td><td><strong>~75 min</strong></td><td><strong>~22-28 min</strong></td><td><strong>~100-110 min</strong></td></tr>
+</table>
+<div class="callout info">
+  <div class="callout-title">Tiempos de espera explicados</div>
+  <p><strong>Entrenamiento (~5-8 min):</strong> SageMaker aprovisiona la instancia ml.m5.xlarge (~3 min), entrena el modelo (~2 min con 20K registros), y sube los artefactos a S3 (~1 min).</p>
+  <p><strong>Build de Docker (~3-5 min):</strong> Descarga de la imagen base Amazon Linux 2023 (~1 min), instalación de paquetes Python (~2 min), y push a ECR (~1-2 min según la red).</p>
+  <p><strong>Arranque de la tarea ECS (~2-4 min):</strong> Fargate aprovisiona el runtime del contenedor, descarga la imagen de ECR, arranca el servidor Flask, y pasa el health check (intervalos de 30 segundos).</p>
+</div>
+
+<h3>Cuándo Usar Este Patrón</h3>
+<p>Este patrón es ideal cuando tienes:</p>
+<ul>
+  <li>Modelos sencillos (&lt; 200 MB)</li>
+  <li>Patrones de invocación esporádicos (no necesitas instancias de inferencia activas todo el tiempo)</li>
+  <li>Modelos que no requieren reentrenamiento frecuente</li>
+  <li>Sin necesidad de GPU para inferencia</li>
+  <li>Necesidad de una solución rentable, fully managed y escalable</li>
+</ul>
+
+<div class="callout tip">
+  <div class="callout-title">Tip</div>
+  <p>Para modelos que requieren auto-scaling, pruebas A/B, monitoreo de modelos, o inferencia con GPU, considera usar endpoints de tiempo real de SageMaker.</p>
+</div>
+</section>
+
+<!-- Architecture Section -->
+<section id="architecture">
+<h2>Arquitectura</h2>
+
+<p>La solución sigue este flujo:</p>
+<ol>
+  <li><strong>Entrenar</strong> un modelo de regresión XGBoost con el dataset California Housing usando el algoritmo integrado de SageMaker</li>
+  <li><strong>Empaquetar</strong> el modelo entrenado en un contenedor Docker con un servidor de inferencia Flask</li>
+  <li><strong>Subir</strong> la imagen del contenedor a Amazon ECR</li>
+  <li><strong>Desplegar</strong> el contenedor como una tarea ECS Fargate con IP pública</li>
+  <li><strong>Invocar</strong> el modelo mediante peticiones HTTP POST (directamente o a través de API Gateway)</li>
+</ol>
+
+<div class="callout info">
+  <div class="callout-title">Nota</div>
+  <p>Abre <code>diagrams/architecture-overview.drawio</code> y <code>diagrams/workflow-steps.drawio</code> en <a href="https://app.diagrams.net/">draw.io</a> para ver los diagramas detallados de arquitectura y flujo de trabajo.</p>
+</div>
+</section>
+<!-- Prerequisites Section -->
+<section id="prerequisites">
+<h2>Prerrequisitos</h2>
+
+<h3>Cuenta de AWS y Permisos</h3>
+<p>Tu rol de ejecución IAM debe tener:</p>
+<table>
+  <tr><th>Permiso</th><th>Propósito</th></tr>
+  <tr><td>S3 Full Access (a tu bucket)</td><td>Almacenar datos de entrenamiento y artefactos del modelo</td></tr>
+  <tr><td>SageMaker Training</td><td>Lanzar instancias de entrenamiento</td></tr>
+  <tr><td>CloudWatch Logs</td><td>Crear grupos de logs y escribir logs</td></tr>
+  <tr><td>ECR Full Access</td><td>Crear repositorios, push/pull de imágenes</td></tr>
+  <tr><td>ECS Full Access</td><td>Crear clusters, registrar tareas, ejecutar tareas</td></tr>
+  <tr><td>EC2 Describe (Network Interfaces)</td><td>Obtener IPs públicas de las tareas</td></tr>
+  <tr><td>IAM PassRole</td><td>Pasar roles de ejecución a las tareas ECS</td></tr>
+</table>
+
+<h3>Roles para Tareas ECS</h3>
+<p>Necesitas dos roles IAM para ECS:</p>
+<ol>
+  <li><strong>Task Role</strong> (<code>ecsTaskRole</code>): El rol que el contenedor asume en tiempo de ejecución</li>
+  <li><strong>Task Execution Role</strong> (<code>ecsTaskExecutionRole</code>): El rol que ECS usa para descargar imágenes y escribir logs
+    <ul><li>Mínimo: política administrada <code>AmazonECSTaskExecutionRolePolicy</code></li></ul>
+  </li>
+</ol>
+
+<h3>Entorno</h3>
+<p>Este workshop se ejecuta en cualquiera de estos entornos:</p>
+<ul>
+  <li><strong>SageMaker Studio Space</strong> (Ubuntu 24.04) - Recomendado</li>
+  <li><strong>SageMaker Notebook Instance</strong> (Amazon Linux 2)</li>
+</ul>
+
+<h3>Requisitos de Software</h3>
+<table>
+  <tr><th>Software</th><th>Versión Mínima</th><th>Versión Probada (Baseline Actualizado)</th></tr>
+  <tr><td>Python</td><td>3.8+</td><td>3.12.13</td></tr>
+  <tr><td>SageMaker SDK</td><td>sagemaker-core 2.x, sagemaker-train 1.x</td><td>sagemaker-core 2.13.1, sagemaker-train 1.13.1</td></tr>
+  <tr><td>Boto3</td><td>1.28+</td><td>1.43.0</td></tr>
+  <tr><td>AWS CLI</td><td>2.x</td><td>2.35.3</td></tr>
+  <tr><td>Docker</td><td>20.x+</td><td>29.5.3</td></tr>
+  <tr><td>XGBoost (local)</td><td>2.x</td><td>2.1.4</td></tr>
+  <tr><td>cURL</td><td>Cualquiera</td><td>8.5.0</td></tr>
+</table>
+</section>
+
+<!-- Module 1 -->
+<section id="module-1">
+<div class="module-header">
+  <h2>Módulo 1: Configuración del Entorno</h2>
+  <p>Preparar tu entorno de SageMaker con todas las herramientas necesarias.</p>
+</div>
+
+<h3>Pasos</h3>
+<ol>
+  <li>Abre el notebook de Jupyter: <code>notebooks/sm_xgboost_ca_housing_ecs_container_model_hosting.ipynb</code></li>
+  <li>El notebook detecta automáticamente tu sistema operativo (Ubuntu o Amazon Linux) y se adapta.</li>
+  <li>Verifica las versiones del software instalado:
+<pre><code>from importlib.metadata import version as pkg_version
+import boto3, sys, xgboost as xgb
+
+print(f"SageMaker SDK: sagemaker-core {pkg_version('sagemaker-core')}")
+print(f"Python: {sys.version}")
+print(f"Boto3: {boto3.__version__}")
+print(f"XGBoost: {xgb.__version__}")</code></pre>
+  </li>
+  <li>Instala y configura el Amazon ECR credential helper:
+    <ul>
+      <li><strong>Ubuntu:</strong> <code>sudo apt-get install -y amazon-ecr-credential-helper</code></li>
+      <li><strong>Amazon Linux:</strong> <code>sudo yum install -y amazon-ecr-credential-helper</code></li>
+    </ul>
+  </li>
+  <li>Configura Docker para usar el ECR credential helper:
+<pre><code>mkdir -p ~/.docker
+printf '{\n\t"credsStore": "ecr-login"\n}' > ~/.docker/config.json</code></pre>
+  </li>
+  <li>Verifica que Docker esté corriendo:
+<pre><code>docker --version</code></pre>
+  </li>
+</ol>
+
+<div class="callout tip">
+  <div class="callout-title">Tip</div>
+  <p>En SageMaker Spaces, puede que necesites arrancar Docker manualmente con <code>sudo dockerd &amp;</code></p>
+</div>
+</section>
+<!-- Module 2 -->
+<section id="module-2">
+<div class="module-header">
+  <h2>Módulo 2: Preparación de Datos</h2>
+  <p>Cargar, dividir, estandarizar y subir el dataset California Housing a S3.</p>
+</div>
+
+<p>El <a href="https://www.dcc.fc.up.pt/~ltorgo/Regression/cal_housing.html">dataset California Housing</a> contiene 20,640 observaciones con 9 características:</p>
+
+<table>
+  <tr><th>Característica</th><th>Descripción</th></tr>
+  <tr><td>median_house_value</td><td><strong>Variable objetivo</strong> - Valor mediano de la vivienda</td></tr>
+  <tr><td>median_income</td><td>Ingreso mediano en el grupo de manzanas</td></tr>
+  <tr><td>housing_median_age</td><td>Edad mediana de las viviendas</td></tr>
+  <tr><td>total_rooms</td><td>Total de habitaciones</td></tr>
+  <tr><td>total_bedrooms</td><td>Total de recámaras</td></tr>
+  <tr><td>population</td><td>Población del grupo de manzanas</td></tr>
+  <tr><td>households</td><td>Número de hogares</td></tr>
+  <tr><td>latitude</td><td>Latitud del grupo de manzanas</td></tr>
+  <tr><td>longitude</td><td>Longitud del grupo de manzanas</td></tr>
+</table>
+
+<h3>Pasos</h3>
+<ol>
+  <li>Carga el archivo CSV en un DataFrame de Pandas:
+<pre><code>pd_data_frame = pd.read_csv('datasets/california_housing.csv')</code></pre>
+  </li>
+  <li>Divide en conjuntos de entrenamiento (80%), validación (8%) y prueba (12%):
+<pre><code>train, test = sklearn.model_selection.train_test_split(
+    pd_data_frame, test_size=0.2, random_state=35, shuffle=True)
+train, val = sklearn.model_selection.train_test_split(
+    train, test_size=0.1, random_state=25, shuffle=True)</code></pre>
+  </li>
+  <li>Estandariza las características usando <code>StandardScaler</code>:
+<pre><code>scaler = StandardScaler()
+x_train = scaler.fit_transform(x_train)  # fit solo en train
+x_val = scaler.transform(x_val)          # transform en val/test
+x_test = scaler.transform(x_test)</code></pre>
+  </li>
+  <li>Guarda localmente y sube a S3:
+<pre><code>train_dir_s3_path = sagemaker_session.upload_data(
+    path='./data/.../train/', bucket=s3_bucket, key_prefix=train_dir_s3_prefix)</code></pre>
+  </li>
+</ol>
+<h3>Estructura en S3</h3>
+<div class="file-tree">s3://&lt;bucket&gt;/sm-xgboost-ca-housing-ecs-container-model-hosting/
+├── data/
+│   ├── train/train.csv
+│   ├── validate/validate.csv
+│   └── test/test.csv
+├── checkpoint/
+└── output/</div>
+</section>
+
+<!-- Module 3 -->
+<section id="module-3">
+<div class="module-header">
+  <h2>Módulo 3: Entrenamiento del Modelo</h2>
+  <p>Entrenar un modelo de regresión XGBoost usando el algoritmo integrado de SageMaker.</p>
+</div>
+
+<p><span class="badge">~10-13 min</span> (5 min prácticos + 5-8 min esperando el entrenamiento)</p>
+
+<div class="callout info">
+  <div class="callout-title">Desglose de tiempos</div>
+  <p><strong>Aprovisionamiento de la instancia:</strong> ~2-3 min (SageMaker lanza y configura la ml.m5.xlarge)</p>
+  <p><strong>Descarga de datos de S3 a la instancia:</strong> ~30 seg</p>
+  <p><strong>Entrenamiento XGBoost (100 rondas con ~14,800 muestras):</strong> ~1-2 min</p>
+  <p><strong>Subida del modelo a S3:</strong> ~30 seg</p>
+  <p><strong>Apagado de la instancia:</strong> ~1 min</p>
+</div>
+
+<h3>Configuración</h3>
+<table>
+  <tr><th>Parámetro</th><th>Valor</th></tr>
+  <tr><td>Algoritmo</td><td>XGBoost 1.2-1</td></tr>
+  <tr><td>Tipo de Instancia</td><td>ml.m5.xlarge</td></tr>
+  <tr><td>Número de Instancias</td><td>1</td></tr>
+  <tr><td>Objetivo</td><td>reg:squarederror</td></tr>
+  <tr><td>Profundidad Máxima</td><td>6</td></tr>
+  <tr><td>Tasa de Aprendizaje (eta)</td><td>0.3</td></tr>
+  <tr><td>Alpha (regularización L1)</td><td>3</td></tr>
+  <tr><td>Colsample by Tree</td><td>0.7</td></tr>
+  <tr><td>Número de Rondas</td><td>100</td></tr>
+</table>
+<h3>Pasos</h3>
+<ol>
+  <li>Obtén el URI de la imagen del contenedor de entrenamiento XGBoost:
+<pre><code>from sagemaker.core import image_uris
+
+container_image_uri = image_uris.retrieve(
+    framework='xgboost', region=region_name,
+    version='1.2-1', py_version='py37',
+    instance_type='ml.m5.xlarge', image_scope='training')</code></pre>
+  </li>
+  <li>Configura y lanza el entrenamiento con ModelTrainer:
+<pre><code>from sagemaker.train import ModelTrainer
+from sagemaker.core.training.configs import Compute, InputData
+
+model_trainer = ModelTrainer(
+    training_image=container_image_uri,
+    hyperparameters=hyperparameters,
+    compute=Compute(instance_type='ml.m5.xlarge', instance_count=1),
+    output_data_config=OutputDataConfig(s3_output_path=model_output_s3_path),
+    role=get_execution_role(),
+    base_job_name=train_job_name,
+    sagemaker_session=sagemaker_session
+)
+model_trainer.train(input_data_config=[train_data, val_data], wait=True)</code></pre>
+  </li>
+  <li>El modelo entrenado (<code>model.tar.gz</code>) se guarda en S3 automáticamente.</li>
+</ol>
+
+<div class="callout info">
+  <div class="callout-title">Nota</div>
+  <p>El modelo intencionalmente no está afinado — este workshop se enfoca en el patrón de deployment, no en la optimización del modelo de ML.</p>
+</div>
+</section>
+
+<!-- Module 4 -->
+<section id="module-4">
+<div class="module-header">
+  <h2>Módulo 4: Contenedorización</h2>
+  <p>Empaquetar el modelo entrenado en un contenedor Docker con un servidor de inferencia Flask.</p>
+</div>
+
+<p><span class="badge">~13-15 min</span> (10 min prácticos + 3-5 min de build/push)</p>
+
+<div class="callout info">
+  <div class="callout-title">Desglose de tiempos</div>
+  <p><strong>Descarga del modelo de S3 y extracción:</strong> ~30 seg</p>
+  <p><strong>Build de Docker (pull de imagen base + pip install):</strong> ~2-4 min (primera vez; builds posteriores usan caché)</p>
+  <p><strong>Creación del repositorio ECR:</strong> ~5 seg</p>
+  <p><strong>Push de Docker a ECR:</strong> ~1-2 min (imagen de ~400-500 MB)</p>
+</div>
+
+<h3>Pasos</h3>
+<ol>
+  <li><strong>Descarga y extrae el modelo</strong> de S3:
+<pre><code>s3_bucket_resource.download_file(model_tar_file_s3_path_suffix, model_tar_file_local_path)
+with tarfile.open(model_tar_file_local_path, "r:gz") as tar:
+    tar.extractall(path=container_artifacts_dir)</code></pre>
+  </li>
+  <li><strong>Revisa el script de inferencia</strong> (<code>scripts/container_sm_xgboost_ca_housing_inference.py</code>):
+    <ul>
+      <li>Servidor web Flask con dos endpoints:
+        <ul>
+          <li><code>POST /</code> — Acepta peticiones de predicción</li>
+          <li><code>GET /healthcheck</code> — Regresa "OK" para los health checks de ECS</li>
+        </ul>
+      </li>
+      <li>Carga el modelo como objeto pickle al arrancar</li>
+      <li>Acepta entrada JSON: <code>{"response_content_type": "...", "pred_x_csv": "val1,val2,..."}</code></li>
+    </ul>
+  </li>
+  <li><strong>Crea el Dockerfile</strong> (usa Amazon Linux 2023 como base):
+<pre><code>FROM public.ecr.aws/amazonlinux/amazonlinux:latest
+WORKDIR /
+RUN dnf -y install python3 python3-pip &amp;&amp; dnf clean all
+RUN python3 -m venv /opt/appenv
+COPY requirements.txt .
+RUN /opt/appenv/bin/pip install --no-cache-dir -r requirements.txt
+COPY xgboost-model ./
+COPY server.py ./
+ENV MODEL_PICKLE_FILE_PATH=xgboost-model
+ENV FLASK_SERVER_LOG_LEVEL=DEBUG
+ENV FLASK_SERVER_HOSTNAME=0.0.0.0
+ENV FLASK_SERVER_PORT=80
+ENV FLASK_SERVER_DEBUG=True
+ENTRYPOINT ["/opt/appenv/bin/python", "server.py"]</code></pre>
+  </li>
+</ol>
+<ol start="4">
+  <li><strong>Construye la imagen Docker:</strong>
+<pre><code>docker build -t sm-xgboost-ca-housing-ecs-container-model-hosting container-artifacts/</code></pre>
+  </li>
+  <li><strong>Crea el repositorio en ECR:</strong>
+<pre><code>ecr_client.create_repository(
+    repositoryName=container_image_name,
+    imageScanningConfiguration={'scanOnPush': True})</code></pre>
+  </li>
+  <li><strong>Sube a ECR:</strong>
+<pre><code>docker tag &lt;imagen&gt;:latest &lt;cuenta&gt;.dkr.ecr.&lt;region&gt;.amazonaws.com/&lt;repo&gt;:latest
+docker push &lt;cuenta&gt;.dkr.ecr.&lt;region&gt;.amazonaws.com/&lt;repo&gt;:latest</code></pre>
+  </li>
+</ol>
+
+<div class="callout tip">
+  <div class="callout-title">Nota de Seguridad</div>
+  <p>El ECR credential helper maneja la autenticación automáticamente en Ubuntu/AL2/AL2023. No se necesita un <code>docker login</code> explícito.</p>
+</div>
+</section>
+
+<!-- Module 5 -->
+<section id="module-5">
+<div class="module-header">
+  <h2>Módulo 5: Despliegue en ECS Fargate</h2>
+  <p>Desplegar el contenedor como una tarea de ECS Fargate.</p>
+</div>
+
+<p><span class="badge">~12-14 min</span> (10 min prácticos + 2-4 min de aprovisionamiento)</p>
+
+<div class="callout info">
+  <div class="callout-title">Desglose de tiempos</div>
+  <p><strong>Creación del cluster ECS:</strong> ~10-30 seg (el cluster pasa a ACTIVE casi de inmediato)</p>
+  <p><strong>Registro de la definición de tarea:</strong> ~5 seg</p>
+  <p><strong>Lanzamiento de tarea hasta estado RUNNING:</strong> ~2-4 min</p>
+  <ul>
+    <li>Aprovisionamiento del runtime del contenedor Fargate: ~30 seg</li>
+    <li>Pull de la imagen desde ECR: ~30-60 seg</li>
+    <li>Arranque de la app Flask + primer health check exitoso: ~30-60 seg</li>
+  </ul>
+</div>
+
+<h3>Pasos</h3>
+<ol>
+  <li><strong>Crea el cluster de ECS:</strong>
+<pre><code>ecs_client.create_cluster(clusterName=ecs_cluster_name)</code></pre>
+  </li>
+  <li><strong>Registra la definición de tarea Fargate:</strong>
+<pre><code>ecs_client.register_task_definition(
+    family=ecs_fargate_task_name,
+    taskRoleArn=ecs_fargate_task_role,
+    executionRoleArn=ecs_fargate_task_execution_role,
+    networkMode='awsvpc',
+    containerDefinitions=[{
+        'name': ecs_container_name,
+        'image': target_image_name,
+        'portMappings': [{'containerPort': 80, 'hostPort': 80, 'protocol': 'tcp'}],
+        'logConfiguration': {
+            'logDriver': 'awslogs',
+            'options': {
+                'awslogs-create-group': 'true',
+                'awslogs-region': region_name,
+                'awslogs-group': f'/ecs/{ecs_fargate_task_name}',
+                'awslogs-stream-prefix': 'ecs'
+            }
+        },
+        'healthCheck': {
+            'command': ["CMD-SHELL", "curl -f http://localhost:80/healthcheck || exit 1"],
+            'interval': 30,
+            'timeout': 30
+        }
+    }],
+    requiresCompatibilities=['FARGATE'],
+    cpu='0.25 vCPU',
+    memory='0.5 GB'
+)</code></pre>
+  </li>
+</ol>
+<ol start="3">
+  <li><strong>Ejecuta la tarea:</strong>
+<pre><code>ecs_client.run_task(
+    cluster=ecs_cluster_name,
+    count=1,
+    launchType='FARGATE',
+    networkConfiguration={
+        'awsvpcConfiguration': {
+            'subnets': ['&lt;tu-subnet-publica&gt;'],
+            'securityGroups': ['&lt;tu-security-group&gt;'],
+            'assignPublicIp': 'ENABLED'
+        }
+    },
+    taskDefinition=ecs_fargate_task_name
+)</code></pre>
+  </li>
+</ol>
+
+<h3>Configuración Clave</h3>
+<table>
+  <tr><th>Parámetro</th><th>Valor</th></tr>
+  <tr><td>Tipo de Lanzamiento</td><td>FARGATE</td></tr>
+  <tr><td>CPU</td><td>0.25 vCPU</td></tr>
+  <tr><td>Memoria</td><td>0.5 GB</td></tr>
+  <tr><td>Modo de Red</td><td>awsvpc</td></tr>
+  <tr><td>IP Pública</td><td>ENABLED</td></tr>
+  <tr><td>Puerto del Contenedor</td><td>80</td></tr>
+  <tr><td>Health Check</td><td>GET /healthcheck</td></tr>
+</table>
+</section>
+
+<!-- Module 6 -->
+<section id="module-6">
+<div class="module-header">
+  <h2>Módulo 6: Pruebas del Despliegue</h2>
+  <p>Verificar que el endpoint de inferencia del modelo funciona correctamente.</p>
+</div>
+
+<p><span class="badge">~11-12 min</span> (10 min prácticos + 1-2 min de propagación del Security Group)</p>
+
+<div class="callout info">
+  <div class="callout-title">Desglose de tiempos</div>
+  <p><strong>Espera a estado RUNNING (si no se completó antes):</strong> 0 seg (ya se esperó en el Módulo 5)</p>
+  <p><strong>Propagación de la regla del Security Group:</strong> ~10-30 seg</p>
+  <p><strong>Latencia de la petición de inferencia (en frío):</strong> ~200-500 ms (primera petición carga el modelo en memoria)</p>
+  <p><strong>Latencia de la petición de inferencia (en caliente):</strong> ~50-100 ms (peticiones subsecuentes)</p>
+</div>
+
+<h3>Pasos</h3>
+<ol>
+  <li><strong>Espera a que la tarea llegue al estado RUNNING</strong> (~2-3 minutos):
+<pre><code>while True:
+    response = ecs_client.describe_tasks(cluster=ecs_cluster_name, tasks=[task_arn])
+    status = response['tasks'][0]['lastStatus']
+    if status in {'RUNNING', 'STOPPED'}:
+        break
+    time.sleep(5)</code></pre>
+  </li>
+  <li><strong>Configura el Security Group:</strong> Agrega una regla de entrada que permita HTTP (puerto 80) desde tu dirección IP.</li>
+  <li><strong>Obtén la IP pública de la tarea:</strong>
+<pre><code># Se obtiene de la Elastic Network Interface de la tarea
+ecs_fargate_task_public_ip = '...'</code></pre>
+  </li>
+  <li><strong>Envía una petición de predicción:</strong>
+<pre><code>curl -X POST -H 'Content-Type: application/json' \
+  --data '{"response_content_type":"application/json","pred_x_csv":"0.12,-0.45,0.78,-0.23,0.56,-0.89,1.23,-0.67"}' \
+  http://&lt;IP_PUBLICA_TAREA&gt;:80/</code></pre>
+  </li>
+  <li><strong>Respuesta esperada:</strong>
+<pre><code>{"Predicted value": "1.2345678"}</code></pre>
+  </li>
+  <li><strong>Prueba el health check:</strong>
+<pre><code>curl http://&lt;IP_PUBLICA_TAREA&gt;:80/healthcheck
+# Respuesta: OK</code></pre>
+  </li>
+</ol>
+</section>
+<!-- Module 7 -->
+<section id="module-7">
+<div class="module-header">
+  <h2>Módulo 7: Integración con API Gateway</h2>
+  <p>Exponer el endpoint de inferencia como una API HTTPS administrada.</p>
+</div>
+
+<p>Para un despliegue de grado producción, vas a:</p>
+<ol>
+  <li><strong>Crear un ECS Service</strong> (en lugar de una tarea independiente) para tener múltiples tareas con balanceo de carga</li>
+  <li><strong>Configurar un Application Load Balancer (ALB)</strong> frente al ECS Service</li>
+  <li><strong>Crear un API Gateway HTTP o REST API</strong> con el ALB como integración backend</li>
+</ol>
+
+<h3>Opciones de API</h3>
+<table>
+  <tr><th>Característica</th><th>HTTP API</th><th>REST API</th></tr>
+  <tr><td>Costo</td><td>Menor</td><td>Mayor</td></tr>
+  <tr><td>Latencia</td><td>Menor</td><td>Mayor</td></tr>
+  <tr><td>Funcionalidades</td><td>Básicas</td><td>Completas (caché, validación de requests, WAF)</td></tr>
+  <tr><td>Usar cuando</td><td>Proxy simple</td><td>API de grado empresarial</td></tr>
+</table>
+
+<div class="callout tip">
+  <div class="callout-title">Tip</div>
+  <p>Para más detalles, consulta <a href="https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-vs-rest.html">Elegir entre HTTP APIs y REST APIs</a>.</p>
+</div>
+</section>
+
+<!-- Module 8 -->
+<section id="module-8">
+<div class="module-header">
+  <h2>Módulo 8: Limpieza</h2>
+  <p>Eliminar todos los recursos para evitar cargos continuos.</p>
+</div>
+
+<h3>Pasos (en orden)</h3>
+<pre><code># 1. Detener la tarea ECS
+ecs_client.stop_task(cluster=ecs_cluster_name, task=ecs_fargate_task_id,
+                     reason='Limpieza del workshop')
+
+# 2. Desregistrar la definición de tarea
+ecs_client.deregister_task_definition(taskDefinition=ecs_fargate_task_definiton_arn)
+
+# 3. Eliminar el cluster ECS
+ecs_client.delete_cluster(cluster=ecs_cluster_name)
+
+# 4. Eliminar el repositorio ECR (force=True elimina las imágenes)
+ecr_client.delete_repository(repositoryName=container_image_name, force=True)
+
+# 5. Eliminar objetos de S3
+for file in s3_bucket_resource.objects.filter(Prefix=f'{nb_name}/'):
+    s3_resource.Object(s3_bucket_resource.name, file.key).delete()</code></pre>
+
+<h3>Limpieza adicional</h3>
+<ul>
+  <li>Elimina imágenes locales de Docker: <code>docker system prune</code></li>
+  <li>Si creaste un API Gateway, elimínalo desde la consola</li>
+  <li>Elimina los Log Groups de CloudWatch: <code>/ecs/&lt;nombre-tarea&gt;</code></li>
+</ul>
+
+<div class="callout warning">
+  <div class="callout-title">Advertencia</div>
+  <p>Si no limpias los recursos, se generarán cargos continuos. Las tareas de ECS Fargate se cobran por segundo, y el almacenamiento en ECR se cobra mensualmente.</p>
+</div>
+</section>
+
+<!-- Changelog Section -->
+<section id="changelog">
+<h2>Registro de Cambios: Actualizaciones del Repositorio Original aws-samples</h2>
+
+<p>Este proyecto es una <strong>versión base actualizada</strong> del <a href="https://github.com/aws-samples/amazon-sagemaker-xgboost-regression-model-hosting-on-amazon-ecs-fargate-and-amazon-api-gateway">repositorio original aws-samples</a>, modernizado para soportar los runtimes actuales de SageMaker, herramientas más nuevas, y mayor compatibilidad de entornos.</p>
+
+<p>El proyecto actualizado se mantiene en: <a href="https://github.com/UCdavidUC/amazon-sagemaker-xgboost-regression-model-hosting-on-amazon-ecs-fargate-and-amazon-api-gateway">github.com/UCdavidUC/amazon-sagemaker-xgboost-regression-model-hosting-on-amazon-ecs-fargate-and-amazon-api-gateway</a></p>
+
+<h3>Por Qué Se Necesitó la Actualización</h3>
+<p>El proyecto original de aws-samples fue escrito para SageMaker Notebook Instances corriendo Amazon Linux con el SDK legacy de <code>sagemaker</code> (API de <code>Estimator</code>). Desde entonces:</p>
+<ul>
+  <li><strong>SageMaker Studio Spaces</strong> (basado en Ubuntu) se convirtió en el entorno de desarrollo recomendado</li>
+  <li>El <strong>SDK de SageMaker para Python</strong> introdujo una arquitectura modular (<code>sagemaker-core</code>, <code>sagemaker-train</code>)</li>
+  <li><strong>Amazon Linux 2023</strong> reemplazó a Amazon Linux 2 como imagen base predeterminada de contenedores</li>
+  <li>El <strong>ECR Docker Credential Helper</strong> se volvió el método estándar de autenticación</li>
+  <li><strong>Python 3.12</strong> reemplazó a Python 3.6/3.7 en los runtimes de SageMaker</li>
+</ul>
+
+<h3>Resumen de Cambios</h3>
+<table>
+  <tr><th>Área</th><th>Original (aws-samples)</th><th>Este Proyecto (Baseline Actualizado)</th></tr>
+  <tr><td>Soporte de Entorno</td><td>Solo SageMaker Notebook Instance (Amazon Linux)</td><td>SageMaker Studio Spaces (Ubuntu 24.04) + Notebook Instances</td></tr>
+  <tr><td>Detección de SO</td><td><code>cat /etc/system-release</code> (solo Amazon Linux)</td><td>Parseo de <code>/etc/os-release</code> (Ubuntu, AL2, AL2023)</td></tr>
+  <tr><td>SDK de SageMaker</td><td><code>import sagemaker</code> con API de <code>Estimator</code></td><td>SDK modular: <code>sagemaker-core</code> 2.x, <code>sagemaker-train</code> 1.x</td></tr>
+  <tr><td>API de Entrenamiento</td><td><code>Estimator(...).fit()</code></td><td><code>ModelTrainer(...).train()</code> con configs <code>InputData</code>, <code>Compute</code></td></tr>
+  <tr><td>Runtime de Python</td><td>3.6.x</td><td>3.12.x</td></tr>
+  <tr><td>XGBoost (local)</td><td>No especificado</td><td>2.1.4</td></tr>
+  <tr><td>Imagen Base del Contenedor</td><td>Amazon Linux 2 con <code>yum</code></td><td>Amazon Linux 2023 con <code>dnf</code> + venv de Python</td></tr>
+  <tr><td>Autenticación Docker</td><td><code>docker login</code> con token (todos los SO)</td><td>ECR credential helper (auto) + fallback para ALv1 legacy</td></tr>
+  <tr><td>Instalación de Paquetes</td><td>Solo <code>yum</code></td><td><code>apt</code> (Ubuntu) + <code>yum</code>/<code>dnf</code> (AL) con auto-detección</td></tr>
+  <tr><td>Docker en contenedor</td><td>pip install directo</td><td>Entorno virtual de Python (<code>/opt/appenv</code>)</td></tr>
+</table>
+<h3>Cambios Detallados</h3>
+
+<h4>1. Soporte Multi-SO (Nuevo en el Baseline Actualizado)</h4>
+<p><strong>Original:</strong> Solo soportaba Amazon Linux v1/v2 en SageMaker notebook instances.</p>
+<p><strong>Baseline Actualizado:</strong> Detecta automáticamente el SO del host y adapta los comandos de instalación:</p>
+<ul>
+  <li>Ubuntu 24.04 (SageMaker Spaces): Usa <code>apt-get</code></li>
+  <li>Amazon Linux 2 / AL2023 (Notebook Instances): Usa <code>yum</code> / <code>dnf</code></li>
+  <li>Fallback para variantes de SO desconocidas</li>
+</ul>
+
+<h4>2. Migración del SDK de SageMaker (Nuevo en el Baseline Actualizado)</h4>
+<p><strong>Original (SDK legacy):</strong></p>
+<pre><code>import sagemaker
+from sagemaker import Session, get_execution_role, image_uris
+from sagemaker.inputs import TrainingInput
+from sagemaker.estimator import Estimator
+
+estimator = Estimator(image_uri=..., role=..., ...)
+estimator.fit(inputs={'train': ..., 'validation': ...})</code></pre>
+
+<p><strong>Baseline Actualizado (SDK modular):</strong></p>
+<pre><code>from sagemaker.core.helper.session_helper import Session, get_execution_role
+from sagemaker.core import image_uris
+from sagemaker.core.inputs import TrainingInput
+from sagemaker.train import ModelTrainer
+from sagemaker.core.training.configs import Compute, InputData
+
+model_trainer = ModelTrainer(
+    training_image=container_image_uri,
+    hyperparameters=hyperparameters,
+    compute=Compute(instance_type=..., instance_count=...),
+    ...
+)
+model_trainer.train(input_data_config=[train_data, val_data], wait=True)</code></pre>
+
+<h4>3. Actualización de la Imagen del Contenedor (Nuevo en el Baseline Actualizado)</h4>
+<p><strong>Dockerfile original usaba:</strong></p>
+<pre><code>FROM public.ecr.aws/amazonlinux/amazonlinux:latest
+RUN yum -y install python3 python3-pip</code></pre>
+
+<p><strong>Dockerfile del Baseline Actualizado usa:</strong></p>
+<pre><code>FROM public.ecr.aws/amazonlinux/amazonlinux:latest
+RUN dnf -y install python3 python3-pip &amp;&amp; dnf clean all
+RUN python3 -m venv /opt/appenv</code></pre>
+
+<p>Mejoras clave:</p>
+<ul>
+  <li>Usa <code>dnf</code> (gestor de paquetes predeterminado de Amazon Linux 2023, reemplazando a <code>yum</code>)</li>
+  <li>Crea un entorno virtual de Python para mejor aislamiento de dependencias</li>
+  <li>Agrega <code>dnf clean all</code> para reducir el tamaño de la imagen</li>
+  <li>Usa <code>/opt/appenv/bin/python</code> como entrypoint para activación correcta del venv</li>
+</ul>
+
+<h4>4. Autenticación con ECR (Nuevo en el Baseline Actualizado)</h4>
+<p><strong>Original:</strong> Usaba <code>docker login</code> explícito con <code>aws ecr get-login-password</code> en todas las versiones de SO.</p>
+<p><strong>Baseline Actualizado:</strong> Usa el Amazon ECR Docker Credential Helper para autenticación transparente:</p>
+<ul>
+  <li>Se instala via gestor de paquetes (<code>apt</code> o <code>yum</code>)</li>
+  <li>Se configura en <code>~/.docker/config.json</code> con <code>"credsStore": "ecr-login"</code></li>
+  <li>Hace fallback a login explícito en sistemas legacy ALv1</li>
+</ul>
+
+<h4>5. Versiones de Runtime Probadas (Baseline Actualizado)</h4>
+<p>El baseline actualizado ha sido probado y validado con:</p>
+<ul>
+  <li>Python 3.12.13 (conda-forge)</li>
+  <li>sagemaker-core 2.13.1</li>
+  <li>sagemaker-train 1.13.1</li>
+  <li>Boto3 1.43.0</li>
+  <li>AWS CLI 2.35.3</li>
+  <li>XGBoost 2.1.4 (local), 1.2-1 (contenedor de entrenamiento)</li>
+  <li>Docker 29.5.3</li>
+  <li>Ubuntu 24.04 (SageMaker Studio Space)</li>
+</ul>
+
+<h4>6. Componentes Sin Cambios</h4>
+<p>Los siguientes archivos permanecen <strong>idénticos</strong> al repositorio original de aws-samples:</p>
+<ul>
+  <li><code>notebooks/scripts/container_sm_xgboost_ca_housing_inference.py</code> (Servidor de inferencia Flask)</li>
+  <li><code>notebooks/scripts/container_sm_xgboost_ca_housing_inference_requirements.txt</code> (flask, pandas, xgboost)</li>
+  <li><code>notebooks/datasets/california_housing.csv</code> (Dataset)</li>
+  <li>Arquitectura y patrón de flujo de trabajo general de la solución</li>
+  <li>Versión del algoritmo de entrenamiento XGBoost (1.2-1) e hiperparámetros</li>
+  <li>Enfoque de despliegue en ECS Fargate y configuración de tareas</li>
+</ul>
+</section>
+
+<!-- Troubleshooting Section -->
+<section id="troubleshooting">
+<h2>Solución de Problemas</h2>
+
+<h3>Problemas Comunes</h3>
+<table>
+  <tr><th>Problema</th><th>Solución</th></tr>
+  <tr><td>"Cannot connect to Docker daemon"</td><td>Ejecuta <code>sudo dockerd &amp;</code> en SageMaker Spaces</td></tr>
+  <tr><td>Push a ECR falla con "no credentials"</td><td>Verifica que <code>~/.docker/config.json</code> tenga <code>"credsStore": "ecr-login"</code></td></tr>
+  <tr><td>La tarea ECS pasa a STOPPED</td><td>Revisa los logs de CloudWatch en <code>/ecs/&lt;nombre-tarea&gt;</code></td></tr>
+  <tr><td>No se puede alcanzar la IP pública de la tarea</td><td>Verifica que el Security Group permita HTTP (puerto 80) desde tu IP</td></tr>
+  <tr><td>El training job falla</td><td>Verifica que el rol IAM tenga permisos de entrenamiento en SageMaker y acceso a S3</td></tr>
+  <tr><td>Errores de "Module not found"</td><td>Reinicia el kernel de Jupyter después de instalar paquetes</td></tr>
+</table>
+
+<h3>Comandos Útiles</h3>
+<pre><code># Verificar el estado del daemon de Docker
+sudo systemctl status docker
+
+# Ver logs de la tarea ECS
+aws logs get-log-events --log-group-name /ecs/&lt;nombre-tarea&gt; --log-stream-name &lt;stream&gt;
+
+# Describir tareas en ejecución
+aws ecs describe-tasks --cluster &lt;nombre-cluster&gt; --tasks &lt;arn-tarea&gt;
+
+# Probar conectividad a la tarea
+curl -v http://&lt;IP_TAREA&gt;:80/healthcheck</code></pre>
+</section>
+<!-- Cost Estimation Section -->
+<section id="costs">
+<h2>Estimación de Costos</h2>
+
+<table>
+  <tr><th>Recurso</th><th>Duración/Uso</th><th>Costo Aproximado</th></tr>
+  <tr><td>SageMaker Training (ml.m5.xlarge)</td><td>~5-8 min</td><td>~$0.03 USD</td></tr>
+  <tr><td>Almacenamiento S3 (datos + modelo)</td><td>&lt; 10 MB</td><td>&lt; $0.01 USD</td></tr>
+  <tr><td>Almacenamiento ECR (imagen de contenedor)</td><td>~500 MB</td><td>~$0.05 USD/mes</td></tr>
+  <tr><td>Tarea ECS Fargate (0.25 vCPU, 0.5 GB)</td><td>~30 min (pruebas)</td><td>~$0.01 USD</td></tr>
+  <tr><td>Transferencia de Datos (pull de ECR, S3)</td><td>&lt; 1 GB</td><td>&lt; $0.01 USD</td></tr>
+  <tr><td>CloudWatch Logs</td><td>&lt; 1 MB</td><td>&lt; $0.01 USD</td></tr>
+  <tr><td>API Gateway (si se configura)</td><td>&lt; 100 peticiones</td><td>&lt; $0.01 USD</td></tr>
+</table>
+
+<p><strong>Costo total del workshop:</strong> &lt; $0.50 USD (si limpias los recursos dentro de una hora)</p>
+
+<div class="callout info">
+  <div class="callout-title">Nota</div>
+  <p>El principal generador de costo es la instancia de entrenamiento de SageMaker. Como XGBoost entrena rápido con este dataset pequeño, el tiempo facturable real es solo ~5 minutos. Los cargos de ECS Fargate son por segundo con un mínimo de 1 minuto, así que probar por 30 minutos cuesta solo ~$0.01 USD.</p>
+</div>
+</section>
+
+<!-- Additional Resources Section -->
+<section id="resources">
+<h2>Recursos Adicionales</h2>
+<ul>
+  <li><a href="https://github.com/UCdavidUC/amazon-sagemaker-xgboost-regression-model-hosting-on-amazon-ecs-fargate-and-amazon-api-gateway">Este Proyecto (Baseline Actualizado)</a></li>
+  <li><a href="https://github.com/aws-samples/amazon-sagemaker-xgboost-regression-model-hosting-on-amazon-ecs-fargate-and-amazon-api-gateway">Repositorio Original aws-samples</a></li>
+  <li><a href="https://docs.aws.amazon.com/sagemaker/">Documentación de Amazon SageMaker</a></li>
+  <li><a href="https://sagemaker.readthedocs.io/en/stable/">SDK de SageMaker para Python (sagemaker-core)</a></li>
+  <li><a href="https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate.html">Documentación de Amazon ECS en Fargate</a></li>
+  <li><a href="https://docs.aws.amazon.com/apigateway/">Documentación de Amazon API Gateway</a></li>
+  <li><a href="https://docs.aws.amazon.com/sagemaker/latest/dg/xgboost.html">Documentación del Algoritmo XGBoost</a></li>
+  <li><a href="https://github.com/awslabs/amazon-ecr-credential-helper">Amazon ECR Docker Credential Helper</a></li>
+</ul>
+</section>
+
+<section id="license">
+<h2>Licencia</h2>
+<p>Esta librería está licenciada bajo la Licencia MIT-0. Consulta el archivo <a href="../LICENSE">LICENSE</a>.</p>
+</section>
+
+</div><!-- end .main -->
+
+</body>
+</html>
