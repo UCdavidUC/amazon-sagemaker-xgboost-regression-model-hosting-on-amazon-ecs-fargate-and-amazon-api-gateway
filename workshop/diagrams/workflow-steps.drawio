@@ -1,0 +1,209 @@
+<mxfile host="app.diagrams.net" modified="2024-01-01T00:00:00.000Z" agent="draw.io" version="22.0.0" type="device">
+  <diagram id="workflow-steps" name="Workshop Workflow">
+    <mxGraphModel dx="1422" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="title" value="Workshop Workflow: End-to-End ML Model Hosting on ECS Fargate" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="20" width="700" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Module 1: Prerequisites -->
+        <mxCell id="step1" value="Module 1&#xa;&#xa;PREREQUISITES&#xa;&#xa;- Configure IAM roles&#xa;- Install Docker, CLI, SDK&#xa;- Setup ECR credential helper&#xa;- Configure S3 bucket" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;verticalAlign=middle;fontStyle=0;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="100" width="180" height="140" as="geometry" />
+        </mxCell>
+
+        <!-- Module 2: Data Preparation -->
+        <mxCell id="step2" value="Module 2&#xa;&#xa;DATA PREPARATION&#xa;&#xa;- Load California Housing CSV&#xa;- Train/Validate/Test split&#xa;- Standardize features&#xa;- Upload to S3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;verticalAlign=middle;fontStyle=0;align=center;" vertex="1" parent="1">
+          <mxGeometry x="320" y="100" width="180" height="140" as="geometry" />
+        </mxCell>
+
+        <!-- Module 3: Training -->
+        <mxCell id="step3" value="Module 3&#xa;&#xa;MODEL TRAINING&#xa;&#xa;- Configure XGBoost hyperparams&#xa;- Use SageMaker ModelTrainer&#xa;- Train on ml.m5.xlarge&#xa;- Output model.tar.gz to S3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;verticalAlign=middle;fontStyle=0;align=center;" vertex="1" parent="1">
+          <mxGeometry x="560" y="100" width="180" height="140" as="geometry" />
+        </mxCell>
+
+        <!-- Module 4: Container -->
+        <mxCell id="step4" value="Module 4&#xa;&#xa;CONTAINERIZATION&#xa;&#xa;- Extract model pickle from S3&#xa;- Create Dockerfile (AL2023)&#xa;- Build Docker image&#xa;- Push to ECR private registry" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;verticalAlign=middle;fontStyle=0;align=center;" vertex="1" parent="1">
+          <mxGeometry x="800" y="100" width="180" height="140" as="geometry" />
+        </mxCell>
+
+        <!-- Module 5: ECS Deployment -->
+        <mxCell id="step5" value="Module 5&#xa;&#xa;ECS DEPLOYMENT&#xa;&#xa;- Create ECS cluster&#xa;- Register Fargate task definition&#xa;- Configure networking (VPC/SG)&#xa;- Run task with public IP" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;verticalAlign=middle;fontStyle=0;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="100" width="180" height="140" as="geometry" />
+        </mxCell>
+
+        <!-- Module 6: Testing -->
+        <mxCell id="step6" value="Module 6&#xa;&#xa;TESTING&#xa;&#xa;- Wait for RUNNING state&#xa;- Get task public IP&#xa;- Configure Security Group&#xa;- Send HTTP POST with cURL" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;verticalAlign=middle;fontStyle=0;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="100" width="180" height="140" as="geometry" />
+        </mxCell>
+
+        <!-- Module 7: API Gateway -->
+        <mxCell id="step7" value="Module 7 (Optional)&#xa;&#xa;API GATEWAY&#xa;&#xa;- Create HTTP/REST API&#xa;- Configure backend integration&#xa;- Setup ECS Service + ALB&#xa;- Enable auto scaling" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;verticalAlign=middle;fontStyle=0;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1520" y="100" width="180" height="140" as="geometry" />
+        </mxCell>
+
+        <!-- Module 8: Cleanup -->
+        <mxCell id="step8" value="Module 8&#xa;&#xa;CLEANUP&#xa;&#xa;- Stop ECS tasks&#xa;- Deregister task definition&#xa;- Delete ECS cluster&#xa;- Delete ECR repository&#xa;- Delete S3 objects" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;verticalAlign=middle;fontStyle=0;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1520" y="300" width="180" height="140" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows between steps -->
+        <mxCell id="a12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="step1" target="step2" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a23" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="step2" target="step3" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a34" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="step3" target="step4" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a45" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="step4" target="step5" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a56" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="step5" target="step6" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a67" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="step6" target="step7" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="a78" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" source="step7" target="step8" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Detailed Flow Section -->
+        <mxCell id="detail-title" value="Detailed Data &amp; Artifact Flow" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="480" width="400" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Data flow diagram -->
+        <mxCell id="df-csv" value="california_housing.csv&#xa;(20,640 records)" style="shape=note;whiteSpace=wrap;html=1;backgroundOutline=1;size=15;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="80" y="550" width="140" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="df-split" value="Train/Val/Test Split&#xa;(80/8/12 %)&#xa;+ Standardization" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="300" y="550" width="140" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="df-s3-data" value="S3: train.csv&#xa;S3: validate.csv&#xa;S3: test.csv" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="520" y="540" width="120" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="df-training" value="SageMaker Training&#xa;XGBoost 1.2&#xa;(ml.m5.xlarge)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="720" y="550" width="140" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="df-model" value="S3: model.tar.gz&#xa;contains&#xa;xgboost-model (pickle)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="940" y="540" width="140" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="df-docker" value="Docker Image&#xa;AL2023 + Flask&#xa;+ XGBoost + Model" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="550" width="130" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="df-ecr" value="ECR&#xa;Private&#xa;Registry" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1370" y="540" width="100" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="df-ecs" value="ECS Fargate&#xa;Task&#xa;(Public IP:80)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1550" y="550" width="120" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Flow arrows -->
+        <mxCell id="fa1" style="exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="df-csv" target="df-split" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fa2" style="exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="df-split" target="df-s3-data" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fa3" style="exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="df-s3-data" target="df-training" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fa4" style="exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="df-training" target="df-model" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fa5" style="exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="df-model" target="df-docker" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fa6" style="exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="df-docker" target="df-ecr" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fa7" style="exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="df-ecr" target="df-ecs" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Request/Response flow -->
+        <mxCell id="req-title" value="Inference Request Flow" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="680" width="400" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="req-client" value="Client / cURL" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="80" y="740" width="120" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="req-post" value="HTTP POST&#xa;Content-Type: application/json&#xa;{&quot;response_content_type&quot;: &quot;...&quot;,&#xa; &quot;pred_x_csv&quot;: &quot;val1,val2,...&quot;}" style="shape=note;whiteSpace=wrap;html=1;backgroundOutline=1;size=15;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="720" width="220" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="req-flask" value="Flask App&#xa;(parse request &gt;&#xa;XGBoost predict &gt;&#xa;format response)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="580" y="730" width="150" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="req-response" value="Response:&#xa;{&quot;Predicted value&quot;: &quot;1.234&quot;}&#xa;or plain text" style="shape=note;whiteSpace=wrap;html=1;backgroundOutline=1;size=15;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;align=left;" vertex="1" parent="1">
+          <mxGeometry x="810" y="730" width="180" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ra1" style="exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="req-client" target="req-post" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ra2" style="exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="req-post" target="req-flask" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ra3" style="exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="req-flask" target="req-response" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Legend -->
+        <mxCell id="legend-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#666666;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="860" width="600" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-title" value="Legend" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="100" y="865" width="60" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend1" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="100" y="895" width="20" height="15" as="geometry" />
+        </mxCell>
+        <mxCell id="legend1-text" value="SageMaker / ML Operations" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="125" y="892" width="140" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend2" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="100" y="920" width="20" height="15" as="geometry" />
+        </mxCell>
+        <mxCell id="legend2-text" value="Container / Docker Operations" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="125" y="917" width="140" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend3" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="300" y="895" width="20" height="15" as="geometry" />
+        </mxCell>
+        <mxCell id="legend3-text" value="ECS / Infrastructure" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="325" y="892" width="120" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend4" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="300" y="920" width="20" height="15" as="geometry" />
+        </mxCell>
+        <mxCell id="legend4-text" value="Optional / Extension" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="325" y="917" width="120" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend5" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="480" y="895" width="20" height="15" as="geometry" />
+        </mxCell>
+        <mxCell id="legend5-text" value="Cleanup / Teardown" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="505" y="892" width="120" height="20" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
