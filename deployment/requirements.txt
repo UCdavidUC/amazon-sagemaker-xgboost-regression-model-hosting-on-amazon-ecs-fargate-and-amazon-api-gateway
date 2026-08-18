@@ -1,0 +1,6 @@
+# Combined dependencies for XGBoost and SARIMA inference
+flask
+numpy
+pandas
+xgboost
+statsmodels

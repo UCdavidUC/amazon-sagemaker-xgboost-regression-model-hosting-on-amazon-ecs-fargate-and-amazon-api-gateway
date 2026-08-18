@@ -1,14 +1,23 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  ECS Fargate infrastructure for hosting the XGBoost California Housing
-  inference model. Creates VPC networking, ALB, ECS Cluster, Service,
-  Task Definition, IAM roles, and CloudWatch log group.
+  ECS Fargate infrastructure for hosting ML inference models (XGBoost and/or
+  SARIMA). Creates VPC networking, ALB, ECS Cluster, Service, Task Definition,
+  IAM roles, CloudWatch log group, and auto-scaling.
 
 Parameters:
   EnvironmentName:
     Type: String
-    Default: xgboost-inference
+    Default: ml-inference
     Description: A name prefix for all resources
+
+  ModelType:
+    Type: String
+    Default: xgboost
+    AllowedValues: [xgboost, sarima]
+    Description: >
+      Model type to serve. Determines inference logic inside the container.
+      'xgboost' uses XGBoost DMatrix prediction; 'sarima' uses statsmodels
+      SARIMAX forecast.
 
   VpcCIDR:
     Type: String
@@ -36,20 +45,24 @@ Parameters:
 
   TaskCpu:
     Type: String
-    Default: '256'
+    Default: '512'
     AllowedValues: ['256', '512', '1024', '2048', '4096']
-    Description: Fargate task CPU units (256 = 0.25 vCPU)
+    Description: >
+      Fargate task CPU units. Recommended: 256 for XGBoost, 512+ for SARIMA
+      (SARIMA forecast computation is heavier per request).
 
   TaskMemory:
     Type: String
-    Default: '512'
+    Default: '1024'
     AllowedValues: ['512', '1024', '2048', '4096', '8192', '16384', '30720']
-    Description: Fargate task memory in MB
+    Description: >
+      Fargate task memory in MB. Recommended: 512 for XGBoost, 1024+ for SARIMA
+      (SARIMA models can be large when fit on long time series).
 
   DesiredCount:
     Type: Number
-    Default: 1
-    Description: Number of desired tasks in the ECS service
+    Default: 2
+    Description: Number of desired tasks in the ECS service (2 for HA across AZs)
 
 Resources:
   # ============================================================
@@ -293,8 +306,10 @@ Resources:
             Retries: 3
             StartPeriod: 10
           Environment:
+            - Name: MODEL_TYPE
+              Value: !Ref ModelType
             - Name: MODEL_PICKLE_FILE_PATH
-              Value: /app/xgboost-model
+              Value: /app/model.pkl
             - Name: FLASK_SERVER_LOG_LEVEL
               Value: INFO
             - Name: FLASK_SERVER_HOSTNAME
@@ -325,22 +340,22 @@ Resources:
         - ContainerName: !Sub ${EnvironmentName}-container
           ContainerPort: !Ref ContainerPort
           TargetGroupArn: !Ref ALBTargetGroup
-      HealthCheckGracePeriodSeconds: 60
+      HealthCheckGracePeriodSeconds: 90
 
   # ============================================================
-  # Auto Scaling (optional, scales between 1-4 tasks)
+  # Auto Scaling (scales between 1-6 tasks based on CPU and request count)
   # ============================================================
   AutoScalingTarget:
     Type: AWS::ApplicationAutoScaling::ScalableTarget
     Properties:
-      MaxCapacity: 4
+      MaxCapacity: 6
       MinCapacity: 1
       ResourceId: !Sub service/${ECSCluster}/${ECSService.Name}
       ScalableDimension: ecs:service:DesiredCount
       ServiceNamespace: ecs
       RoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService
 
-  AutoScalingPolicy:
+  CPUScalingPolicy:
     Type: AWS::ApplicationAutoScaling::ScalingPolicy
     Properties:
       PolicyName: !Sub ${EnvironmentName}-cpu-scaling
@@ -349,7 +364,24 @@ Resources:
       TargetTrackingScalingPolicyConfiguration:
         PredefinedMetricSpecification:
           PredefinedMetricType: ECSServiceAverageCPUUtilization
-        TargetValue: 70.0
+        TargetValue: 60.0
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+
+  RequestCountScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${EnvironmentName}-request-scaling
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref AutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ALBRequestCountPerTarget
+          ResourceLabel: !Sub
+            - "${ALBFullName}/${TGFullName}"
+            - ALBFullName: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+              TGFullName: !GetAtt ALBTargetGroup.TargetGroupFullName
+        TargetValue: 100.0
         ScaleInCooldown: 300
         ScaleOutCooldown: 60
 
