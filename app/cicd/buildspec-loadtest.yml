@@ -1,0 +1,43 @@
+version: 0.2
+# Load / performance test stage.
+#
+# Follows AWS Well-Architected guidance for load testing:
+#   * Test against a QA environment that mirrors production configuration
+#     (same instance/task sizes, same auto scaling policies).
+#   * Generate load from a representative, repeatable profile.
+#   * Assert on latency percentiles and error rate, not just throughput.
+#   * Capture results as artifacts for the release-approval notification.
+#
+# Uses Locust in headless mode. For very high target rates, run this as a
+# distributed Locust (master/workers) or use the AWS Distributed Load Testing
+# solution; the same locustfile drives both.
+env:
+  variables:
+    USERS: "50"
+    SPAWN_RATE: "10"
+    RUN_TIME: "3m"
+    # Well-Architected style pass/fail thresholds (tune per SLO).
+    MAX_P95_MS: "1500"
+    MAX_FAIL_RATIO: "0.01"
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - pip install "locust>=2.20"
+  build:
+    commands:
+      - echo "Load testing $API_BASE_URL for $RUN_TIME with $USERS users"
+      - |
+        locust -f app/cicd/loadtest/locustfile.py \
+          --headless -u "$USERS" -r "$SPAWN_RATE" -t "$RUN_TIME" \
+          --host "$API_BASE_URL" \
+          --csv loadtest --only-summary
+      - echo "Evaluating thresholds"
+      - python app/cicd/loadtest/evaluate.py
+artifacts:
+  files:
+    - loadtest_stats.csv
+    - loadtest_stats_history.csv
+    - loadtest-verdict.json
+  name: loadtest-results

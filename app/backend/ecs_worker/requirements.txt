@@ -1,0 +1,7 @@
+# ECS Fargate worker dependencies.
+boto3>=1.34
+numpy>=1.26,<3
+# Enable the heavy model runtimes on the ECS backend (Graviton/arm64 wheels).
+xgboost==2.1.4
+statsmodels>=0.14
+pandas>=2.0

@@ -1,0 +1,481 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Core shared infrastructure for the multi-model inference API: a customer
+  managed KMS key, a private-by-default VPC (multi-AZ private subnets, public
+  subnets only for NAT/ingress proxies), interface/gateway VPC endpoints, the
+  DynamoDB request-tracking table, the per-backend SQS queues with dead-letter
+  queues, and the CloudWatch log groups. All data is encrypted at rest with the
+  CMK and in transit via TLS-only endpoint policies. Exports are consumed by the
+  API/Lambda and ECS Fargate stacks.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: inference
+    Description: Resource name prefix (shared across all stacks in this solution).
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, qa, prod]
+    Description: Deployment environment. Controls retention and removal policies.
+
+  VpcCIDR:
+    Type: String
+    Default: 10.20.0.0/16
+
+  PrivateSubnet1CIDR:
+    Type: String
+    Default: 10.20.1.0/24
+
+  PrivateSubnet2CIDR:
+    Type: String
+    Default: 10.20.2.0/24
+
+  PublicSubnet1CIDR:
+    Type: String
+    Default: 10.20.101.0/24
+
+  PublicSubnet2CIDR:
+    Type: String
+    Default: 10.20.102.0/24
+
+  VisibilityTimeoutSeconds:
+    Type: Number
+    Default: 300
+    Description: >
+      SQS visibility timeout. Must be greater than the longest inference
+      processing time (AWS best practice) to avoid duplicate processing.
+
+  MaxReceiveCount:
+    Type: Number
+    Default: 5
+    Description: Deliveries attempted before a message is routed to the DLQ.
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+
+Resources:
+  # ============================================================
+  # KMS customer managed key (encryption at rest for all services)
+  # ============================================================
+  EncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub CMK for ${EnvironmentName} inference platform (${Environment})
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableRootAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowServiceUsage
+            Effect: Allow
+            Principal:
+              Service:
+                - sqs.amazonaws.com
+                - dynamodb.amazonaws.com
+                - logs.amazonaws.com
+                - sns.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+
+  EncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/${EnvironmentName}-${Environment}
+      TargetKeyId: !Ref EncryptionKey
+
+  # ============================================================
+  # VPC and networking (private by default)
+  # ============================================================
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${Environment}-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Ref PublicSubnet1CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${Environment}-public-1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Ref PublicSubnet2CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${Environment}-public-2
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Ref PrivateSubnet1CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${Environment}-private-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Ref PrivateSubnet2CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${Environment}-private-2
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RTA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RTA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  # Single NAT gateway (cost-conscious for dev/qa). For prod, consider one NAT
+  # per AZ for AZ-independent egress.
+  NatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnet1
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  DefaultPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1RTA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateSubnet2RTA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet2
+
+  # ============================================================
+  # VPC endpoints (keep AWS service traffic on the private network)
+  # ============================================================
+  VpcEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Interface VPC endpoint access from the VPC CIDR (HTTPS).
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref VpcCIDR
+          Description: HTTPS from within the VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${Environment}-vpce-sg
+
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+
+  DynamoDbGatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.dynamodb
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+
+  SqsInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.sqs
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+      SecurityGroupIds: [!Ref VpcEndpointSecurityGroup]
+
+  EcrApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.api
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+      SecurityGroupIds: [!Ref VpcEndpointSecurityGroup]
+
+  EcrDkrEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.dkr
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+      SecurityGroupIds: [!Ref VpcEndpointSecurityGroup]
+
+  LogsInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.logs
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+      SecurityGroupIds: [!Ref VpcEndpointSecurityGroup]
+
+  KmsInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.kms
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+      SecurityGroupIds: [!Ref VpcEndpointSecurityGroup]
+
+  # ============================================================
+  # DynamoDB request-tracking table
+  # ============================================================
+  RequestsTable:
+    Type: AWS::DynamoDB::Table
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: !If [IsProd, Retain, Delete]
+    Properties:
+      TableName: !Sub ${EnvironmentName}-${Environment}-requests
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: request_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: request_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref EncryptionKey
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ============================================================
+  # SQS queues + dead-letter queues (one pair per backend)
+  # ============================================================
+  LambdaDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${EnvironmentName}-${Environment}-lambda-dlq
+      MessageRetentionPeriod: 1209600
+      KmsMasterKeyId: !Ref EncryptionKey
+      SqsManagedSseEnabled: false
+
+  LambdaQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${EnvironmentName}-${Environment}-lambda-queue
+      VisibilityTimeout: !Ref VisibilityTimeoutSeconds
+      MessageRetentionPeriod: 345600
+      KmsMasterKeyId: !Ref EncryptionKey
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt LambdaDLQ.Arn
+        maxReceiveCount: !Ref MaxReceiveCount
+
+  EcsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${EnvironmentName}-${Environment}-ecs-dlq
+      MessageRetentionPeriod: 1209600
+      KmsMasterKeyId: !Ref EncryptionKey
+
+  EcsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${EnvironmentName}-${Environment}-ecs-queue
+      VisibilityTimeout: !Ref VisibilityTimeoutSeconds
+      MessageRetentionPeriod: 345600
+      KmsMasterKeyId: !Ref EncryptionKey
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt EcsDLQ.Arn
+        maxReceiveCount: !Ref MaxReceiveCount
+
+  # Enforce TLS on the queues (encryption in transit).
+  LambdaQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref LambdaQueue]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 'sqs:*'
+            Resource: !GetAtt LambdaQueue.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  EcsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref EcsQueue]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 'sqs:*'
+            Resource: !GetAtt EcsQueue.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  # ============================================================
+  # CloudWatch log groups (custom, per requirement)
+  # ============================================================
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /inference/${Environment}/api-access
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !GetAtt EncryptionKey.Arn
+
+  ApplicationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /inference/${Environment}/application
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !GetAtt EncryptionKey.Arn
+
+Outputs:
+  VpcId:
+    Value: !Ref VPC
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-VpcId' }
+  PrivateSubnets:
+    Value: !Join [',', [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-PrivateSubnets' }
+  PublicSubnets:
+    Value: !Join [',', [!Ref PublicSubnet1, !Ref PublicSubnet2]]
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-PublicSubnets' }
+  VpcCidr:
+    Value: !Ref VpcCIDR
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-VpcCidr' }
+  KmsKeyArn:
+    Value: !GetAtt EncryptionKey.Arn
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-KmsKeyArn' }
+  RequestsTableName:
+    Value: !Ref RequestsTable
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-RequestsTableName' }
+  RequestsTableArn:
+    Value: !GetAtt RequestsTable.Arn
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-RequestsTableArn' }
+  LambdaQueueUrl:
+    Value: !Ref LambdaQueue
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-LambdaQueueUrl' }
+  LambdaQueueArn:
+    Value: !GetAtt LambdaQueue.Arn
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-LambdaQueueArn' }
+  EcsQueueUrl:
+    Value: !Ref EcsQueue
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-EcsQueueUrl' }
+  EcsQueueArn:
+    Value: !GetAtt EcsQueue.Arn
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-EcsQueueArn' }
+  EcsQueueName:
+    Value: !GetAtt EcsQueue.QueueName
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-EcsQueueName' }
+  ApiAccessLogGroupArn:
+    Value: !GetAtt ApiAccessLogGroup.Arn
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-ApiAccessLogGroupArn' }
+  ApplicationLogGroupName:
+    Value: !Ref ApplicationLogGroup
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-ApplicationLogGroupName' }
+  VpcEndpointSecurityGroupId:
+    Value: !Ref VpcEndpointSecurityGroup
+    Export: { Name: !Sub '${EnvironmentName}-${Environment}-VpceSgId' }

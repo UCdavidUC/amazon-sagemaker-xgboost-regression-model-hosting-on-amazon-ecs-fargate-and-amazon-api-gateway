@@ -1,0 +1,287 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Amazon ECS Fargate compute backend for the multi-model inference API. Runs a
+  queue-driven worker service on Graviton (arm64) Fargate tasks across two
+  Availability Zones in private subnets. The service scales on SQS
+  backlog-per-task using target tracking with metric math (the AWS-recommended
+  pattern) so it can absorb bursts of 200+ inference requests per minute.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: inference
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, qa, prod]
+
+  ContainerImageUri:
+    Type: String
+    Description: ECR image URI for the ECS worker (arm64).
+
+  TaskCpu:
+    Type: String
+    Default: '2048'
+    Description: Fargate task CPU units (2048 = 2 vCPU, per spec minimum).
+  TaskMemory:
+    Type: String
+    Default: '8192'
+    Description: Fargate task memory in MB (8192 = 8 GB, per spec minimum).
+
+  DesiredCount:
+    Type: Number
+    Default: 3
+  MinTasks:
+    Type: Number
+    Default: 2
+    Description: Minimum tasks (>=2 keeps the service highly available across AZs).
+  MaxTasks:
+    Type: Number
+    Default: 25
+    Description: >
+      Ceiling for scale-out. At ~200 requests/min and a target backlog of 30
+      messages/task, a handful of tasks suffice; the ceiling absorbs larger
+      spikes and retries.
+  BacklogPerTaskTarget:
+    Type: Number
+    Default: 30
+    Description: Target number of queued messages per running task.
+
+  ModelBucket:
+    Type: String
+    Default: ''
+    Description: Optional S3 bucket holding model artifacts to sync at startup.
+
+Conditions:
+  HasModelBucket: !Not [!Equals [!Ref ModelBucket, '']]
+
+Resources:
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${EnvironmentName}-${Environment}-cluster
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  WorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Egress-only SG for the ECS worker (no inbound; queue-driven).
+      VpcId:
+        Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-VpcId
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound (VPC endpoints + NAT for ECR/SQS/DynamoDB)
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${Environment}-ecs-worker-sg
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: kms-and-logs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [kms:Decrypt, kms:GenerateDataKey]
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-KmsKeyArn
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: worker-runtime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DynamoWrite
+                Effect: Allow
+                Action: [dynamodb:UpdateItem, dynamodb:GetItem]
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-RequestsTableArn
+              - Sid: SqsConsume
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:DeleteMessageBatch
+                  - sqs:GetQueueAttributes
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-EcsQueueArn
+              - Sid: KmsUse
+                Effect: Allow
+                Action: [kms:Decrypt, kms:GenerateDataKey]
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-KmsKeyArn
+              - !If
+                - HasModelBucket
+                - Sid: ModelRead
+                  Effect: Allow
+                  Action: [s3:GetObject, s3:ListBucket]
+                  Resource:
+                    - !Sub arn:aws:s3:::${ModelBucket}
+                    - !Sub arn:aws:s3:::${ModelBucket}/*
+                - !Ref AWS::NoValue
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${EnvironmentName}-${Environment}-worker
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      RuntimePlatform:
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: worker
+          Image: !Ref ContainerImageUri
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group:
+                Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-ApplicationLogGroupName
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs-worker
+          HealthCheck:
+            Command: [CMD-SHELL, 'python -m backend.ecs_worker.healthcheck || exit 1']
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 20
+          Environment:
+            - Name: ENVIRONMENT
+              Value: !Ref Environment
+            - Name: REQUESTS_TABLE_NAME
+              Value:
+                Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-RequestsTableName
+            - Name: ECS_QUEUE_URL
+              Value:
+                Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-EcsQueueUrl
+            - Name: MODEL_DIR
+              Value: /opt/models
+            - Name: MODEL_BUCKET
+              Value: !Ref ModelBucket
+            - Name: LOG_LEVEL
+              Value: INFO
+            - Name: MAX_WORKERS
+              Value: '8'
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub ${EnvironmentName}-${Environment}-worker
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Split
+            - ','
+            - Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-PrivateSubnets
+          SecurityGroups: [!Ref WorkerSecurityGroup]
+
+  # ============================================================
+  # Auto scaling on SQS backlog-per-task (metric math target tracking)
+  # ============================================================
+  ScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MinCapacity: !Ref MinTasks
+      MaxCapacity: !Ref MaxTasks
+      ResourceId: !Sub service/${Cluster}/${Service.Name}
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+      RoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService
+
+  BacklogScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${EnvironmentName}-${Environment}-backlog-per-task
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: !Ref BacklogPerTaskTarget
+        ScaleInCooldown: 120
+        ScaleOutCooldown: 30
+        CustomizedMetricSpecification:
+          Metrics:
+            - Id: backlog
+              Label: BacklogPerTask
+              ReturnData: true
+              # Backlog per task = visible messages / running tasks. The service
+              # min capacity is >= 2, so the denominator is never zero.
+              Expression: 'messages / tasks'
+            - Id: messages
+              ReturnData: false
+              MetricStat:
+                Stat: Average
+                Metric:
+                  Namespace: AWS/SQS
+                  MetricName: ApproximateNumberOfMessagesVisible
+                  Dimensions:
+                    - Name: QueueName
+                      Value:
+                        Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-EcsQueueName
+            - Id: tasks
+              ReturnData: false
+              MetricStat:
+                Stat: Average
+                Metric:
+                  Namespace: ECS/ContainerInsights
+                  MetricName: RunningTaskCount
+                  Dimensions:
+                    - Name: ClusterName
+                      Value: !Ref Cluster
+                    - Name: ServiceName
+                      Value: !GetAtt Service.Name
+
+  # A CPU safety-net policy in case tasks become compute-bound.
+  CpuScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub ${EnvironmentName}-${Environment}-cpu
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 65.0
+        ScaleInCooldown: 120
+        ScaleOutCooldown: 30
+
+Outputs:
+  ClusterName:
+    Value: !Ref Cluster
+  ServiceName:
+    Value: !GetAtt Service.Name
+  TaskDefinitionArn:
+    Value: !Ref TaskDefinition

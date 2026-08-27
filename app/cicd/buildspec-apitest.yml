@@ -1,0 +1,21 @@
+version: 0.2
+# API endpoint tests against the freshly deployed QA stage. CodeBuild runs
+# inside the VPC (configured on the CodeBuild project) so it can reach the
+# PRIVATE API Gateway through the execute-api interface endpoint.
+#
+# Expects environment variables:
+#   API_BASE_URL  - e.g. https://<api-id>.execute-api.<region>.amazonaws.com/qa/api
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - pip install requests
+  build:
+    commands:
+      - echo "Smoke-testing $API_BASE_URL"
+      - python app/cicd/apitest/smoke_test.py
+artifacts:
+  files:
+    - api-smoke-results.json
+  name: apitest-results

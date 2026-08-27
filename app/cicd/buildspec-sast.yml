@@ -1,0 +1,35 @@
+version: 0.2
+# Static Application Security Testing + unit tests.
+# Runs in a CodeBuild container that mirrors the production runtime (Python 3.12
+# on arm64) so results are representative of what ships.
+env:
+  variables:
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - python -m pip install --upgrade pip
+      - pip install bandit pip-audit
+  build:
+    commands:
+      - echo "== Unit tests =="
+      - cd app && python -m unittest discover -s tests -p "test_*.py" -v && cd ..
+      - echo "== Bandit SAST (source) =="
+      # High severity/confidence findings fail the build; everything is reported.
+      - bandit -r app/backend -ll -ii -f json -o bandit-report.json || BANDIT_RC=$?
+      - bandit -r app/backend -ll -ii || true
+      - echo "== Dependency vulnerability audit =="
+      - pip-audit -r app/backend/ecs_worker/requirements.txt -f json -o pip-audit.json || true
+      - test -z "$BANDIT_RC" || (echo "Bandit found high-severity issues" && exit 1)
+reports:
+  sast:
+    files:
+      - bandit-report.json
+    file-format: BanditJson
+artifacts:
+  files:
+    - bandit-report.json
+    - pip-audit.json
+  name: sast-reports

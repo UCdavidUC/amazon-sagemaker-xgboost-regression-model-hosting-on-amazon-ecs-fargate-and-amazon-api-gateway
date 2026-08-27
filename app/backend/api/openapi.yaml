@@ -1,0 +1,185 @@
+openapi: 3.0.3
+info:
+  title: Multi-Model Inference API
+  version: 1.0.0
+  description: >
+    Asynchronous inference API that fronts two interchangeable compute
+    backends (AWS Lambda and Amazon ECS Fargate) exposing the same four models
+    (weighted, arima, sarima, xgboost). A submission returns 202 with a
+    request_id; the result is retrieved by polling the status endpoint. Request
+    status, input, and output are tracked in DynamoDB and processing is
+    decoupled through Amazon SQS.
+servers:
+  - url: https://{apiId}.execute-api.{region}.amazonaws.com/{stage}
+    variables:
+      apiId: { default: abcdef123 }
+      region: { default: us-east-1 }
+      stage: { default: dev, enum: [dev, qa, prod] }
+
+paths:
+  /api:
+    get:
+      summary: List available operations
+      operationId: getCatalog
+      responses:
+        '200':
+          description: Operation catalog
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Catalog' }
+
+  /api/health:
+    get:
+      summary: Liveness probe
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /api/backend/{backend}/model/{model}:
+    post:
+      summary: Submit an inference request
+      operationId: submitInference
+      parameters:
+        - in: path
+          name: backend
+          required: true
+          schema: { type: string, enum: [lambda, ecs-fargate] }
+        - in: path
+          name: model
+          required: true
+          schema: { type: string, enum: [weighted, arima, sarima, xgboost] }
+        - in: header
+          name: X-Client-Request-Id
+          required: false
+          schema: { type: string }
+          description: Optional caller-supplied correlation id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/TabularInput'
+                - $ref: '#/components/schemas/ForecastInput'
+      responses:
+        '202':
+          description: Request accepted and queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubmitAccepted' }
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Unknown backend or model
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/requests/{request_id}:
+    get:
+      summary: Get request status and result
+      operationId: getRequest
+      parameters:
+        - in: path
+          name: request_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Current request record
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestRecord' }
+        '404':
+          description: Unknown request id
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  schemas:
+    Catalog:
+      type: object
+      properties:
+        service: { type: string }
+        backends:
+          type: array
+          items: { type: string }
+        models:
+          type: array
+          items: { type: string }
+        operations:
+          type: array
+          items:
+            type: object
+    TabularInput:
+      type: object
+      description: Input for the weighted and xgboost models (California Housing).
+      properties:
+        features:
+          type: array
+          items: { type: number }
+          minItems: 8
+          maxItems: 8
+          description: >
+            Eight standardized features in order: median_income,
+            housing_median_age, total_rooms, total_bedrooms, population,
+            households, latitude, longitude.
+        pred_x_csv:
+          type: string
+          description: Legacy comma-separated form of the eight features.
+        weights:
+          type: array
+          items: { type: number }
+          description: Optional per-feature weights (weighted model only).
+    ForecastInput:
+      type: object
+      description: Input for the arima and sarima models.
+      required: [steps]
+      properties:
+        steps:
+          type: integer
+          minimum: 1
+          maximum: 365
+        exog:
+          type: array
+          description: Exogenous regressors, one row per step (sarima only).
+          items:
+            type: array
+            items: { type: number }
+    SubmitAccepted:
+      type: object
+      properties:
+        request_id: { type: string }
+        status: { type: string, example: QUEUED }
+        backend: { type: string }
+        model: { type: string }
+        status_url: { type: string }
+    RequestRecord:
+      type: object
+      properties:
+        request_id: { type: string }
+        backend: { type: string }
+        model: { type: string }
+        status:
+          type: string
+          enum: [QUEUED, PROCESSING, COMPLETED, FAILED]
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        input: { type: object }
+        output: { type: object }
+        error: { type: string }
+    Error:
+      type: object
+      properties:
+        error: { type: string }

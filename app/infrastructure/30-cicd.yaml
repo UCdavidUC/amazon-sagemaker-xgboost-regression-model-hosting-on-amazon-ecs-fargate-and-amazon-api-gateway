@@ -1,0 +1,477 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CI/CD pipeline for the multi-model inference API. Triggered when SageMaker (or
+  any build) pushes a new image to the ECR repository. The pipeline runs SAST +
+  unit tests, deploys to QA, runs API endpoint tests and a Well-Architected load
+  test, publishes a metrics-rich approval notification, waits for a human
+  approver, then deploys to production. CodeBuild containers mirror the
+  production runtime (Python 3.12 / arm64) and the verification projects run
+  inside the VPC so they can reach the private API.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: inference
+  EcrRepoName:
+    Type: String
+    Description: ECR repository that receives the SageMaker/model image pushes.
+  SourceBucket:
+    Type: String
+    Description: S3 bucket holding the versioned pipeline source bundle (source.zip).
+  SourceKey:
+    Type: String
+    Default: cicd/source.zip
+  KmsKeyArn:
+    Type: String
+    Description: CMK ARN (from the core stack) for encrypting artifacts and notifications.
+  QaApiBaseUrl:
+    Type: String
+    Description: QA API base URL including /api (used by endpoint and load tests).
+  ApprovalEmail:
+    Type: String
+    Description: Email subscribed to the production approval SNS topic.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+
+Resources:
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${EnvironmentName}-cicd-artifacts-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KmsKeyArn
+      VersioningConfiguration:
+        Status: Enabled
+
+  ApprovalTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${EnvironmentName}-prod-approval
+      KmsMasterKeyId: !Ref KmsKeyArn
+
+  ApprovalSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref ApprovalTopic
+      Protocol: email
+      Endpoint: !Ref ApprovalEmail
+
+  CodeBuildSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Egress-only SG for in-VPC CodeBuild verification jobs.
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+
+  # ============================================================
+  # IAM roles
+  # ============================================================
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: codebuild.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: codebuild-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*
+              - Effect: Allow
+                Action: [s3:GetObject, s3:GetObjectVersion, s3:PutObject, s3:GetBucketLocation]
+                Resource:
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub ${ArtifactBucket.Arn}/*
+                  - !Sub arn:aws:s3:::${SourceBucket}
+                  - !Sub arn:aws:s3:::${SourceBucket}/*
+              - Effect: Allow
+                Action: [kms:Decrypt, kms:GenerateDataKey]
+                Resource: !Ref KmsKeyArn
+              - Effect: Allow
+                Action: [sns:Publish]
+                Resource: !Ref ApprovalTopic
+              # Deploy actions: roll the new image onto ECS and update Lambda code.
+              - Effect: Allow
+                Action:
+                  - ecs:UpdateService
+                  - ecs:DescribeServices
+                  - ecs:DescribeTaskDefinition
+                  - ecs:RegisterTaskDefinition
+                  - lambda:UpdateFunctionCode
+                  - lambda:GetFunction
+                  - iam:PassRole
+                Resource: '*'
+              - Effect: Allow
+                Action: [ecr:GetAuthorizationToken, ecr:BatchGetImage, ecr:DescribeImages]
+                Resource: '*'
+              # In-VPC verification jobs manage their ENIs.
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeVpcs
+                  - ec2:CreateNetworkInterfacePermission
+                Resource: '*'
+
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: codepipeline.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: pipeline-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject, s3:GetObjectVersion, s3:PutObject, s3:GetBucketVersioning]
+                Resource:
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub ${ArtifactBucket.Arn}/*
+                  - !Sub arn:aws:s3:::${SourceBucket}
+                  - !Sub arn:aws:s3:::${SourceBucket}/*
+              - Effect: Allow
+                Action: [codebuild:BatchGetBuilds, codebuild:StartBuild]
+                Resource: '*'
+              - Effect: Allow
+                Action: [kms:Decrypt, kms:GenerateDataKey]
+                Resource: !Ref KmsKeyArn
+              - Effect: Allow
+                Action: [sns:Publish]
+                Resource: !Ref ApprovalTopic
+              - Effect: Allow
+                Action: [ecr:DescribeImages, ecr:BatchGetImage, ecr:GetDownloadUrlForLayer]
+                Resource: '*'
+
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: start-pipeline
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}
+
+  # ============================================================
+  # CodeBuild projects
+  # ============================================================
+  SastProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${EnvironmentName}-sast
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts: { Type: CODEPIPELINE }
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: app/cicd/buildspec-sast.yml
+      EncryptionKey: !Ref KmsKeyArn
+
+  ApiTestProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${EnvironmentName}-apitest
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts: { Type: CODEPIPELINE }
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+        EnvironmentVariables:
+          - { Name: API_BASE_URL, Value: !Ref QaApiBaseUrl }
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: app/cicd/buildspec-apitest.yml
+      VpcConfig:
+        VpcId: !Ref VpcId
+        Subnets: !Ref PrivateSubnetIds
+        SecurityGroupIds: [!Ref CodeBuildSecurityGroup]
+      EncryptionKey: !Ref KmsKeyArn
+
+  LoadTestProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${EnvironmentName}-loadtest
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts: { Type: CODEPIPELINE }
+      TimeoutInMinutes: 30
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+        EnvironmentVariables:
+          - { Name: API_BASE_URL, Value: !Ref QaApiBaseUrl }
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: app/cicd/buildspec-loadtest.yml
+      VpcConfig:
+        VpcId: !Ref VpcId
+        Subnets: !Ref PrivateSubnetIds
+        SecurityGroupIds: [!Ref CodeBuildSecurityGroup]
+      EncryptionKey: !Ref KmsKeyArn
+
+  DeployQaProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${EnvironmentName}-deploy-qa
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts: { Type: CODEPIPELINE }
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+        EnvironmentVariables:
+          - { Name: TARGET_ENV, Value: qa }
+          - { Name: ECS_CLUSTER, Value: !Sub '${EnvironmentName}-qa-cluster' }
+          - { Name: ECS_SERVICE, Value: !Sub '${EnvironmentName}-qa-worker' }
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - echo "Deploying image to QA ECS service $ECS_SERVICE"
+                - aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --force-new-deployment
+                - aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+      EncryptionKey: !Ref KmsKeyArn
+
+  NotifyApprovalProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${EnvironmentName}-notify-approval
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts: { Type: CODEPIPELINE }
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+        EnvironmentVariables:
+          - { Name: APPROVAL_TOPIC_ARN, Value: !Ref ApprovalTopic }
+      Source:
+        Type: CODEPIPELINE
+        # Aggregates the SAST + load-test artifacts and publishes a metrics-rich
+        # notification (running time, error and vulnerability counts, model/perf
+        # metrics) so the approver decides with full context.
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions: { python: 3.12 }
+            build:
+              commands:
+                - python app/cicd/notify_approval.py
+      EncryptionKey: !Ref KmsKeyArn
+
+  DeployProdProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${EnvironmentName}-deploy-prod
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts: { Type: CODEPIPELINE }
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+        EnvironmentVariables:
+          - { Name: TARGET_ENV, Value: prod }
+          - { Name: ECS_CLUSTER, Value: !Sub '${EnvironmentName}-prod-cluster' }
+          - { Name: ECS_SERVICE, Value: !Sub '${EnvironmentName}-prod-worker' }
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - echo "Deploying image to PROD ECS service $ECS_SERVICE"
+                - aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --force-new-deployment
+                - aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+      EncryptionKey: !Ref KmsKeyArn
+
+  # ============================================================
+  # Pipeline
+  # ============================================================
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${EnvironmentName}-inference-pipeline
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+        EncryptionKey:
+          Id: !Ref KmsKeyArn
+          Type: KMS
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceBundle
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: S3
+                Version: '1'
+              Configuration:
+                S3Bucket: !Ref SourceBucket
+                S3ObjectKey: !Ref SourceKey
+                PollForSourceChanges: 'false'
+              OutputArtifacts: [{ Name: SourceOutput }]
+              RunOrder: 1
+            - Name: ContainerImage
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: ECR
+                Version: '1'
+              Configuration:
+                RepositoryName: !Ref EcrRepoName
+                ImageTag: latest
+              OutputArtifacts: [{ Name: ImageOutput }]
+              RunOrder: 1
+        - Name: Build_And_Test
+          Actions:
+            - Name: SAST_UnitTests
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration: { ProjectName: !Ref SastProject }
+              InputArtifacts: [{ Name: SourceOutput }]
+              OutputArtifacts: [{ Name: SastOutput }]
+              RunOrder: 1
+        - Name: Deploy_QA
+          Actions:
+            - Name: DeployToQA
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration: { ProjectName: !Ref DeployQaProject }
+              InputArtifacts: [{ Name: SourceOutput }]
+              RunOrder: 1
+        - Name: Verify_QA
+          Actions:
+            - Name: ApiEndpointTests
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration: { ProjectName: !Ref ApiTestProject }
+              InputArtifacts: [{ Name: SourceOutput }]
+              OutputArtifacts: [{ Name: ApiTestOutput }]
+              RunOrder: 1
+            - Name: LoadTest
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration: { ProjectName: !Ref LoadTestProject }
+              InputArtifacts: [{ Name: SourceOutput }]
+              OutputArtifacts: [{ Name: LoadTestOutput }]
+              RunOrder: 1
+        - Name: Approve_Prod
+          Actions:
+            - Name: PublishMetrics
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration: { ProjectName: !Ref NotifyApprovalProject }
+              InputArtifacts: [{ Name: SastOutput }]
+              RunOrder: 1
+            - Name: ManualApproval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              Configuration:
+                NotificationArn: !Ref ApprovalTopic
+                CustomData: >-
+                  Review the SAST, API test, and load-test results emailed by the
+                  PublishMetrics step before approving the production deployment.
+              RunOrder: 2
+        - Name: Deploy_Prod
+          Actions:
+            - Name: DeployToProd
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration: { ProjectName: !Ref DeployProdProject }
+              InputArtifacts: [{ Name: SourceOutput }]
+              RunOrder: 1
+
+  # ============================================================
+  # Trigger: start the pipeline when a new image is pushed to ECR
+  # ============================================================
+  EcrPushRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub ${EnvironmentName}-ecr-push-trigger
+      Description: Start the inference pipeline on ECR image push.
+      EventPattern:
+        source: [aws.ecr]
+        detail-type: [ECR Image Action]
+        detail:
+          action-type: [PUSH]
+          result: [SUCCESS]
+          repository-name: [!Ref EcrRepoName]
+          image-tag: [latest]
+      State: ENABLED
+      Targets:
+        - Arn: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}
+          Id: inference-pipeline
+          RoleArn: !GetAtt EventBridgeRole.Arn
+
+Outputs:
+  PipelineName:
+    Value: !Ref Pipeline
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
+  ApprovalTopicArn:
+    Value: !Ref ApprovalTopic
