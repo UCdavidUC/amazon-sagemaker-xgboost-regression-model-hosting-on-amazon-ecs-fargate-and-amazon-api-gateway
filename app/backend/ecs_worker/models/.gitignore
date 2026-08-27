@@ -1,0 +1,4 @@
+# Never commit trained model artifacts.
+*
+!.gitignore
+!.gitkeep
