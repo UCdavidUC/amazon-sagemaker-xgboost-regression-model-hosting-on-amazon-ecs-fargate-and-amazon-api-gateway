@@ -64,8 +64,10 @@ echo "== Environment=${ENVIRONMENT} Region=${REGION} Account=${ACCOUNT_ID} =="
 echo ">>> Packaging backend.zip"
 rm -rf "$BUILD_DIR"; mkdir -p "$BUILD_DIR"
 # Zip so that `backend/` is at the archive root (handler = backend.api.handler...).
+# Baked ECS model artifacts are excluded: the Lambda worker reads /opt/models,
+# not backend/ecs_worker/models, so shipping them in the zip is unnecessary.
 ( cd "$APP_DIR" && zip -qr "${BUILD_DIR}/backend.zip" backend \
-    -x '*/__pycache__/*' '*.pyc' )
+    -x '*/__pycache__/*' '*.pyc' 'backend/ecs_worker/models/*' )
 aws s3 cp "${BUILD_DIR}/backend.zip" "s3://${CODE_BUCKET}/${CODE_KEY}" --region "$REGION"
 
 # -----------------------------------------------------------------------------

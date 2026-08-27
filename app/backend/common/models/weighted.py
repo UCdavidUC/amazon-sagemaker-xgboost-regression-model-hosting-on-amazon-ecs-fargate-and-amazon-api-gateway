@@ -55,24 +55,24 @@ class WeightedModel(InferenceModel):
         return {"features": features, "weights": weights}
 
     def predict(self, normalized_input: Dict[str, Any]) -> Dict[str, Any]:
-        import numpy as np  # lazy import - keeps the API validation path light
-
-        features = np.asarray(normalized_input["features"], dtype=float)
+        # Pure-Python scoring: no numpy required, so the weighted model runs on
+        # the Lambda backend (which ships no scientific stack) as well as on ECS.
+        features = normalized_input["features"]
 
         if normalized_input.get("weights") is not None:
-            weights = np.asarray(normalized_input["weights"], dtype=float)
+            weights = normalized_input["weights"]
             intercept = 0.0
             source = "request-weights"
         elif isinstance(self._artifact, dict):
-            weights = np.asarray(self._artifact["weights"], dtype=float)
+            weights = [float(w) for w in self._artifact["weights"]]
             intercept = float(self._artifact.get("intercept", 0.0))
             source = "artifact"
         else:
-            weights = np.asarray(_DEFAULT_WEIGHTS, dtype=float)
+            weights = _DEFAULT_WEIGHTS
             intercept = _DEFAULT_INTERCEPT
             source = "default-weights"
 
-        prediction = float(np.dot(features, weights) + intercept)
+        prediction = float(sum(f * w for f, w in zip(features, weights)) + intercept)
         return {
             "model": self.name,
             "prediction": prediction,

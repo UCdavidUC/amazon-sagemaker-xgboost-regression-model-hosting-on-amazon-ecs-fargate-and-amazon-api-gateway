@@ -42,13 +42,21 @@ cdk synth -c environment=dev \
 cdk deploy -c environment=dev --all \
   -c ecsImageUri=<acct>.dkr.ecr.<region>.amazonaws.com/inference-worker:latest
 
-# Deploy the CI/CD pipeline as well.
+# Deploy the CI/CD pipeline. IMPORTANT: deploy it in the QA environment context
+# (-c environment=qa) so its in-VPC test jobs run in the QA VPC and can reach the
+# PRIVATE QA API. The QA runtime stacks must already be deployed.
 cdk deploy inference-cicd \
+  -c environment=qa \
   -c deployCicd=true \
   -c ecrRepo=inference-worker \
   -c approvalEmail=you@example.com \
   -c qaApiBaseUrl=https://<api-id>.execute-api.<region>.amazonaws.com/qa/api
 ```
+
+> **Why `environment=qa` for the pipeline:** the API endpoint and load-test
+> CodeBuild jobs run inside the VPC to reach the private API. The `CicdStack`
+> places them in the core VPC of the environment context, so it must match the
+> environment whose QA API you point `qaApiBaseUrl` at.
 
 ## Context flags
 

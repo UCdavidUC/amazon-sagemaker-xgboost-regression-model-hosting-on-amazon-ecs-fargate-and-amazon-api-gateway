@@ -103,6 +103,32 @@ class XGBoostModelTests(unittest.TestCase):
         norm = model.validate_input({"features": VALID_FEATURES})
         self.assertEqual(norm["features"], VALID_FEATURES)
 
+    def test_artifact_discovery_prefers_portable_format(self):
+        import os
+        import tempfile
+
+        from backend.common.config import Config
+        from backend.common.models.xgboost_model import XGBoostModel
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Config()
+            object.__setattr__(cfg, "model_dir", d)  # Config is frozen
+            model = XGBoostModel(config=cfg)
+
+            self.assertEqual(model._discover_artifact(), (None, None))
+
+            open(os.path.join(d, "xgboost-model.pkl"), "w").close()
+            self.assertEqual(model._discover_artifact()[0], "pickle")
+
+            open(os.path.join(d, "xgboost-model.json"), "w").close()
+            self.assertEqual(model._discover_artifact()[0], "native")
+
+            ubj = os.path.join(d, "xgboost-model.ubj")
+            open(ubj, "w").close()
+            kind, path = model._discover_artifact()
+            self.assertEqual(kind, "native")
+            self.assertTrue(path.endswith("xgboost-model.ubj"))
+
 
 class RegistryTests(unittest.TestCase):
     def test_unknown_model(self):

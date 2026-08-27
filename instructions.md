@@ -98,6 +98,13 @@ The trained artifact is written to:
 s3://$S3_BUCKET/sm-xgboost-ca-housing-ecs-container-model-hosting/output/$TRAINING_JOB_NAME/output/model.tar.gz
 ```
 
+The notebook then **stages the trained model automatically** into
+`app/backend/ecs_worker/models/xgboost-model.ubj` (section "Stage the trained
+model for the inference app"). Run that cell and the artifact is ready for the
+worker image build — no manual download/rename needed (step 3.1 below is only a
+fallback). By default the cell writes to `app/backend/ecs_worker/models/`
+relative to the notebook; set `ECS_WORKER_MODELS_DIR` to override the location.
+
 > Optional: to also serve a real SARIMA model, run
 > `notebooks/sarima_arima_ca_housing_ecs_container_model_hosting.ipynb` and note
 > its artifact location as well. If you skip this, the `arima`/`sarima` routes
@@ -113,6 +120,13 @@ then deploy the CDK stacks pointing at that image.
 
 ### 3.1 Fetch and stage the model artifact
 
+> **Already done in the notebook.** The training notebook stages the model into
+> `app/backend/ecs_worker/models/` for you: the XGBoost notebook exports
+> `xgboost-model.ubj` (XGBoost's portable, version-independent `save_model`
+> format), and the SARIMA/ARIMA notebook writes `sarima-model.pkl` /
+> `arima-model.pkl`. If you ran that staging cell, skip to 3.2. The manual
+> commands below are a fallback for when you train outside the notebook.
+
 ```bash
 cd app/backend/ecs_worker/models
 
@@ -123,15 +137,20 @@ aws s3 cp \
 tar -xzf model.tar.gz
 rm -f model.tar.gz
 
-# SageMaker XGBoost outputs a file named 'xgboost-model'. The worker loads
-# '<model-name>-model.pkl', so rename it to 'xgboost-model.pkl'.
-[ -f xgboost-model ] && mv xgboost-model xgboost-model.pkl
-ls -l   # expect: xgboost-model.pkl   (and optionally sarima-model.pkl)
+# SageMaker XGBoost outputs a pickled booster named 'xgboost-model'. Convert it
+# to the portable, version-independent format the worker prefers (recommended):
+python3 -c "import pickle,xgboost; b=pickle.load(open('xgboost-model','rb')); b.save_model('xgboost-model.ubj')"
+rm -f xgboost-model
+# Fallback if you cannot run the conversion: the worker also accepts the legacy
+# pickle if you instead rename it to 'xgboost-model.pkl'.
+ls -l   # expect: xgboost-model.ubj   (and optionally sarima-model.pkl)
 cd -
 ```
 
-> If you trained SARIMA in step 2, place its pickle here as `sarima-model.pkl`
-> (and `arima-model.pkl` for ARIMA). Files in this folder are git-ignored.
+> The worker loads `xgboost-model.ubj` (preferred) or `xgboost-model.json`, and
+> falls back to a legacy `xgboost-model.pkl`. If you trained SARIMA/ARIMA in
+> step 2, place `sarima-model.pkl` / `arima-model.pkl` here too. Files in this
+> folder are git-ignored.
 
 ### 3.2 Build and push the ECS worker image (arm64)
 
@@ -177,14 +196,22 @@ To deploy another environment, change `-c environment=qa` (or `prod`) and rebuil
 the image tag if desired.
 
 Optional — deploy the CI/CD pipeline so future SageMaker image pushes redeploy
-automatically:
+automatically. Deploy a **QA** environment first and deploy the pipeline in the
+QA context (`-c environment=qa`) so its in-VPC API/load-test jobs run in the QA
+VPC and can reach the private QA API:
 
 ```bash
+# 1. Deploy the QA runtime stacks (same steps as dev, with environment=qa).
+cdk deploy -c environment=qa --all --require-approval never -c ecsImageUri="$IMAGE_URI"
+
+# 2. Read the QA private API base URL.
 export QA_API_URL=$(aws cloudformation describe-stacks \
-  --stack-name inference-dev-api-lambda --region "$AWS_REGION" \
+  --stack-name inference-qa-api-lambda --region "$AWS_REGION" \
   --query "Stacks[0].Outputs[?OutputKey=='PrivateInvokeUrl'].OutputValue" --output text)
 
+# 3. Deploy the pipeline IN THE QA CONTEXT (CodeBuild test jobs need the QA VPC).
 cdk deploy inference-cicd \
+  -c environment=qa \
   -c deployCicd=true \
   -c ecrRepo="$ECR_REPO" \
   -c approvalEmail=you@example.com \
@@ -225,17 +252,21 @@ awscurl --service execute-api --region "$AWS_REGION" \
 # -> {"status":"COMPLETED","output":{"prediction": ...}}
 ```
 
-Which models need the trained artifact:
+Both backends expose all four models; what runs out of the box differs:
 
-| Route | Backend | Needs artifact from step 2? |
+| Model | Lambda backend (zip) | ECS backend (container) |
 |---|---|---|
-| `.../model/xgboost` | ECS (baked image) | Yes — `xgboost-model.pkl` |
-| `.../model/weighted` | Lambda or ECS | No (built-in coefficients) |
-| `.../model/arima`, `.../model/sarima` | Lambda or ECS | Optional (naive fallback if absent) |
+| `weighted` | Works (pure-Python) | Works |
+| `arima` / `sarima` | Naive-forecast fallback | Real forecast with the baked artifact; naive fallback otherwise |
+| `xgboost` | Needs a container image or layer | Works with `xgboost-model.ubj` baked into the image |
 
-> The Lambda backend `xgboost` route needs the heavy runtime + artifact via a
-> Lambda layer or container image; by default xgboost is served by the ECS
-> backend. See `app/cdk/README.md`.
+- The **ECS backend** is the target for the models trained in step 2 — the
+  `.ubj`/`.pkl` artifacts are baked into its image.
+- The **Lambda backend** ships no scientific stack by default, so it serves
+  `weighted` and the `arima`/`sarima` naive fallback immediately. To serve real,
+  artifact-backed models on Lambda, package that worker as a container image or
+  attach a layer (see `app/backend/lambda_worker/requirements.txt` and
+  `app/cdk/README.md`).
 
 ---
 
