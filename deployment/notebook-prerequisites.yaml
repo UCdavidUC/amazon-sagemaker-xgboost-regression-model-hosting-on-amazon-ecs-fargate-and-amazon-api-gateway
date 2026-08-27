@@ -153,7 +153,9 @@ Resources:
     Condition: AttachNotebookPolicy
     Properties:
       ManagedPolicyName: !Sub '${ResourcePrefix}-notebook-permissions'
-      Description: >
+      # Use '>-' (strip trailing newline): IAM rejects newline characters in a
+      # managed-policy Description.
+      Description: >-
         Permissions for the SageMaker notebook to read this stack's outputs and
         to build/push/deploy the inference container to ECR and ECS Fargate.
       Roles:
