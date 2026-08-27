@@ -1,35 +1,20 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: >
-  Prerequisite resources for running the XGBoost and SARIMA model-hosting
-  notebooks. Creates the S3 bucket (for training data and model artifacts),
-  the two ECS IAM roles (task execution role and task role), and the
-  networking (VPC, public subnet, and security group) that the notebook
-  configuration cells require. The stack Outputs print the exact copy-paste
-  values to fill into the notebook cells.
+Description: Notebook prerequisites - S3 bucket, ECS IAM roles, and VPC/subnet/security group.
 
 Parameters:
   ResourcePrefix:
     Type: String
     Default: ml-nb-prereq
-    Description: >
-      A short name prefix applied to created resources so they are easy to
-      identify. Must be lowercase, suitable for use in an S3 bucket name.
+    Description: Lowercase name prefix for created resources (also the S3 bucket prefix).
     AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
-    ConstraintDescription: >
-      Must be 3-32 characters, lowercase letters, numbers and hyphens only,
-      and start/end with a letter or number.
+    ConstraintDescription: 3-32 lowercase alphanumerics/hyphens, starting and ending with alphanumeric.
 
   NotebookExecutionRoleName:
     Type: String
     Default: ''
-    Description: >
-      Name (not ARN) of the SageMaker execution role that runs the notebook.
-      When provided, the stack attaches a managed policy granting that role the
-      permissions the notebook needs (including cloudformation:DescribeStacks so
-      section E can read these stack outputs). Leave empty to skip - useful if
-      the role already has sufficient permissions or is managed elsewhere. To
-      find the role name, run print(get_execution_role()) in the notebook and
-      take the part after 'role/'.
+    Description: SageMaker execution role NAME (not ARN) to grant notebook permissions. Empty to skip.
+    AllowedPattern: '^$|^[a-zA-Z0-9+=,.@_-]+$'
+    ConstraintDescription: Role NAME only (letters, numbers, +=,.@_-); not an ARN.
 
   VpcCIDR:
     Type: String
@@ -44,17 +29,12 @@ Parameters:
   ContainerPort:
     Type: Number
     Default: 80
-    Description: >
-      TCP port the inference container listens on. The security group allows
-      inbound traffic on this port. The notebooks default to port 80.
+    Description: TCP port the inference container listens on (opened in the security group).
 
   InboundTestCIDR:
     Type: String
     Default: 0.0.0.0/0
-    Description: >
-      CIDR allowed to reach the ECS task on the container port. Defaults to
-      0.0.0.0/0 for easy testing. For a tighter setup, set this to the public
-      IP of the environment testing the task, e.g. 203.0.113.10/32.
+    Description: CIDR allowed to reach the ECS task. Restrict to your IP/32 for tighter access.
     AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
     ConstraintDescription: Must be a valid CIDR block, e.g. 0.0.0.0/0 or 203.0.113.10/32.
 
@@ -153,11 +133,7 @@ Resources:
     Condition: AttachNotebookPolicy
     Properties:
       ManagedPolicyName: !Sub '${ResourcePrefix}-notebook-permissions'
-      # Use '>-' (strip trailing newline): IAM rejects newline characters in a
-      # managed-policy Description.
-      Description: >-
-        Permissions for the SageMaker notebook to read this stack's outputs and
-        to build/push/deploy the inference container to ECR and ECS Fargate.
+      Description: Notebook access to stack outputs, S3, ECR, ECS, and logs.
       Roles:
         - !Ref NotebookExecutionRoleName
       PolicyDocument:
@@ -361,9 +337,7 @@ Outputs:
     Value: !Ref ECSTaskSecurityGroup
 
   ECRRegistryUrlPrefix:
-    Description: >
-      Value for the notebook variable container_registry_url_prefix. The
-      notebook can also derive this from the account ID and region at runtime.
+    Description: Value for the notebook variable container_registry_url_prefix.
     Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'
 
   NotebookPolicyStatus:
@@ -375,9 +349,7 @@ Outputs:
 
   # ----- Ready-to-paste snippet for the notebook "Create common objects" cell -----
   NotebookConfigSnippet:
-    Description: >
-      Copy-paste this block into the notebook configuration cell, replacing the
-      matching placeholder assignments.
+    Description: Copy-paste block for the notebook "Create common objects" cell.
     Value: !Sub |
       s3_bucket = '${ModelDataBucket}'
       container_registry_url_prefix = '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'
