@@ -98,6 +98,13 @@ The trained artifact is written to:
 s3://$S3_BUCKET/sm-xgboost-ca-housing-ecs-container-model-hosting/output/$TRAINING_JOB_NAME/output/model.tar.gz
 ```
 
+The notebook then **stages the trained model automatically** into
+`app/backend/ecs_worker/models/xgboost-model.pkl` (section "Stage the trained
+model for the inference app"). Run that cell and the artifact is ready for the
+worker image build — no manual download/rename needed (step 3.1 below is only a
+fallback). By default the cell writes to `app/backend/ecs_worker/models/`
+relative to the notebook; set `ECS_WORKER_MODELS_DIR` to override the location.
+
 > Optional: to also serve a real SARIMA model, run
 > `notebooks/sarima_arima_ca_housing_ecs_container_model_hosting.ipynb` and note
 > its artifact location as well. If you skip this, the `arima`/`sarima` routes
@@ -112,6 +119,12 @@ its image. We fetch the artifact from S3, stage it, build/push the arm64 image,
 then deploy the CDK stacks pointing at that image.
 
 ### 3.1 Fetch and stage the model artifact
+
+> **Already done in the notebook.** The training notebook stages the pickle into
+> `app/backend/ecs_worker/models/` for you (xgboost -> `xgboost-model.pkl`; the
+> SARIMA/ARIMA notebook -> `sarima-model.pkl` / `arima-model.pkl`). If you ran
+> that staging cell, skip to 3.2. The manual commands below are a fallback for
+> when you train outside the notebook or need to re-stage an existing artifact.
 
 ```bash
 cd app/backend/ecs_worker/models
