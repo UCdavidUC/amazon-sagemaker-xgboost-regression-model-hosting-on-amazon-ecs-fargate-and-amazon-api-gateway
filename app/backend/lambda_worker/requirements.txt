@@ -1,0 +1,8 @@
+# Lambda worker dependencies. boto3 is provided by the runtime.
+# numpy is needed by the weighted model at prediction time.
+numpy>=1.26,<3
+# The XGBoost and statsmodels wheels are large; for the Lambda backend they are
+# best delivered as a Lambda layer or via a container image rather than a zip.
+# Uncomment if you package this function as a container image:
+# xgboost==2.1.4
+# statsmodels>=0.14

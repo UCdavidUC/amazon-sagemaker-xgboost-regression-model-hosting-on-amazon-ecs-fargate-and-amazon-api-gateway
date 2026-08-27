@@ -29,6 +29,10 @@ notebooks/container-artifacts/
 *.tar.gz
 xgboost-model
 
+# Generated setup output (contains account-specific ARNs, bucket names, subnet/SG IDs)
+deployment/notebook-config.generated.txt
+deployment/build/
+
 # Docker
 *.log
 

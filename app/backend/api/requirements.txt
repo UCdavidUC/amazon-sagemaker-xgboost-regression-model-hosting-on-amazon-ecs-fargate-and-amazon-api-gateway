@@ -1,0 +1,4 @@
+# API Gateway Lambda dependencies.
+# boto3 is provided by the Lambda Python runtime, so it is intentionally omitted.
+# The API only validates payloads and talks to DynamoDB/SQS; it does not run
+# model inference, so numpy/xgboost/statsmodels are NOT required here.

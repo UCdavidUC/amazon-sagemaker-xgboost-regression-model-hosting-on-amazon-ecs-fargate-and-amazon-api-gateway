@@ -1,0 +1,385 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Prerequisite resources for running the XGBoost and SARIMA model-hosting
+  notebooks. Creates the S3 bucket (for training data and model artifacts),
+  the two ECS IAM roles (task execution role and task role), and the
+  networking (VPC, public subnet, and security group) that the notebook
+  configuration cells require. The stack Outputs print the exact copy-paste
+  values to fill into the notebook cells.
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Default: ml-nb-prereq
+    Description: >
+      A short name prefix applied to created resources so they are easy to
+      identify. Must be lowercase, suitable for use in an S3 bucket name.
+    AllowedPattern: '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+    ConstraintDescription: >
+      Must be 3-32 characters, lowercase letters, numbers and hyphens only,
+      and start/end with a letter or number.
+
+  NotebookExecutionRoleName:
+    Type: String
+    Default: ''
+    Description: >
+      Name (not ARN) of the SageMaker execution role that runs the notebook.
+      When provided, the stack attaches a managed policy granting that role the
+      permissions the notebook needs (including cloudformation:DescribeStacks so
+      section E can read these stack outputs). Leave empty to skip - useful if
+      the role already has sufficient permissions or is managed elsewhere. To
+      find the role name, run print(get_execution_role()) in the notebook and
+      take the part after 'role/'.
+
+  VpcCIDR:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: CIDR block for the VPC.
+
+  PublicSubnetCIDR:
+    Type: String
+    Default: 10.0.1.0/24
+    Description: CIDR block for the public subnet that will host the ECS task.
+
+  ContainerPort:
+    Type: Number
+    Default: 80
+    Description: >
+      TCP port the inference container listens on. The security group allows
+      inbound traffic on this port. The notebooks default to port 80.
+
+  InboundTestCIDR:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: >
+      CIDR allowed to reach the ECS task on the container port. Defaults to
+      0.0.0.0/0 for easy testing. For a tighter setup, set this to the public
+      IP of the environment testing the task, e.g. 203.0.113.10/32.
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+    ConstraintDescription: Must be a valid CIDR block, e.g. 0.0.0.0/0 or 203.0.113.10/32.
+
+Conditions:
+  # True when a notebook execution role name was provided, enabling the
+  # managed policy that grants that role the permissions the notebook needs.
+  AttachNotebookPolicy: !Not [!Equals [!Ref NotebookExecutionRoleName, '']]
+
+Resources:
+  # ============================================================
+  # S3 bucket for training data, checkpoints and model output
+  # ============================================================
+  # Bucket name includes the account ID and region to keep it globally unique.
+  ModelDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-model-data'
+
+  # ============================================================
+  # ECS Task Execution Role
+  # Assumed by the ECS agent to pull the image from ECR and push
+  # container logs to CloudWatch Logs.
+  # ============================================================
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-ecs-task-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        # The notebook task definitions set awslogs-create-group=true, which
+        # requires an explicit CreateLogGroup permission (not included in the
+        # managed policy above).
+        - PolicyName: CloudWatchLogsCreateGroup
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-ecs-task-execution-role'
+
+  # ============================================================
+  # ECS Task Role
+  # Assumed by the container at runtime. The demo inference containers
+  # do not call other AWS services, so no extra permissions are attached.
+  # Add policies here if your container needs S3, DynamoDB, etc.
+  # ============================================================
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ResourcePrefix}-ecs-task-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-ecs-task-role'
+
+  # ============================================================
+  # Notebook permissions policy (optional)
+  # Attached to the provided SageMaker execution role. Grants the actions
+  # the notebook performs end-to-end. Created only when
+  # NotebookExecutionRoleName is set (see the AttachNotebookPolicy condition).
+  # ============================================================
+  NotebookExecutionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: AttachNotebookPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${ResourcePrefix}-notebook-permissions'
+      Description: >
+        Permissions for the SageMaker notebook to read this stack's outputs and
+        to build/push/deploy the inference container to ECR and ECS Fargate.
+      Roles:
+        - !Ref NotebookExecutionRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Section E reads the prerequisite values from this stack's outputs.
+          - Sid: ReadCloudFormationStacks
+            Effect: Allow
+            Action:
+              - cloudformation:DescribeStacks
+            Resource: !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/*'
+
+          # Read/write the training data and model artifacts in the bucket.
+          - Sid: ModelDataBucketAccess
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource: !GetAtt ModelDataBucket.Arn
+          - Sid: ModelDataObjectAccess
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource: !Sub '${ModelDataBucket.Arn}/*'
+
+          # Create/describe the private ECR repository and push the image.
+          - Sid: ECRAuth
+            Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+            Resource: '*'
+          - Sid: ECRRepositoryAccess
+            Effect: Allow
+            Action:
+              - ecr:CreateRepository
+              - ecr:DeleteRepository
+              - ecr:DescribeRepositories
+              - ecr:BatchCheckLayerAvailability
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - ecr:InitiateLayerUpload
+              - ecr:UploadLayerPart
+              - ecr:CompleteLayerUpload
+              - ecr:PutImage
+            Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/*'
+
+          # Create the cluster, register the task definition, run and describe tasks.
+          - Sid: ECSAccess
+            Effect: Allow
+            Action:
+              - ecs:CreateCluster
+              - ecs:DeleteCluster
+              - ecs:DescribeClusters
+              - ecs:RegisterTaskDefinition
+              - ecs:DeregisterTaskDefinition
+              - ecs:RunTask
+              - ecs:StopTask
+              - ecs:DescribeTasks
+            Resource: '*'
+
+          # The task test step looks up the task's public IP via its ENI.
+          - Sid: EC2Describe
+            Effect: Allow
+            Action:
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeSubnets
+              - ec2:DescribeSecurityGroups
+            Resource: '*'
+
+          # The awslogs driver creates the log group and writes container logs.
+          - Sid: CloudWatchLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogGroups
+              - logs:DescribeLogStreams
+              - logs:GetLogEvents
+            Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/*'
+
+          # ECS needs PassRole to hand the two task roles to the task at run time.
+          - Sid: PassECSTaskRoles
+            Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource:
+              - !GetAtt ECSTaskExecutionRole.Arn
+              - !GetAtt ECSTaskRole.Arn
+            Condition:
+              StringEquals:
+                iam:PassedToService: ecs-tasks.amazonaws.com
+
+  # ============================================================
+  # Networking: VPC + Internet Gateway + one public subnet
+  # A single public subnet is sufficient for the notebooks, which
+  # launch a single ECS task with a public IP.
+  # ============================================================
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-vpc'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-igw'
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Ref PublicSubnetCIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-public-subnet'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-public-rt'
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  # ============================================================
+  # Security group for the ECS task
+  # Allows inbound TCP on the container port and all outbound
+  # (needed to pull the image from ECR and reach CloudWatch).
+  # ============================================================
+  ECSTaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Inbound access to the notebook ECS task on port ${ContainerPort}'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          CidrIp: !Ref InboundTestCIDR
+          Description: Allow inbound HTTP to the inference container
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound
+      Tags:
+        - Key: Name
+          Value: !Sub '${ResourcePrefix}-ecs-task-sg'
+
+Outputs:
+  # ----- Individual values -----
+  S3BucketName:
+    Description: Value for the notebook variable s3_bucket
+    Value: !Ref ModelDataBucket
+
+  ECSTaskExecutionRoleArn:
+    Description: Value for the notebook variable ecs_fargate_task_execution_role
+    Value: !GetAtt ECSTaskExecutionRole.Arn
+
+  ECSTaskRoleArn:
+    Description: Value for the notebook variable ecs_fargate_task_role
+    Value: !GetAtt ECSTaskRole.Arn
+
+  PublicSubnetId:
+    Description: Value for the notebook variable ecs_fargate_task_subnet_list
+    Value: !Ref PublicSubnet
+
+  SecurityGroupId:
+    Description: Value for the notebook variable ecs_fargate_task_security_group_list
+    Value: !Ref ECSTaskSecurityGroup
+
+  ECRRegistryUrlPrefix:
+    Description: >
+      Value for the notebook variable container_registry_url_prefix. The
+      notebook can also derive this from the account ID and region at runtime.
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'
+
+  NotebookPolicyStatus:
+    Description: Whether a permissions policy was attached to the notebook execution role.
+    Value: !If
+      - AttachNotebookPolicy
+      - !Sub 'Attached policy ${ResourcePrefix}-notebook-permissions to role ${NotebookExecutionRoleName}'
+      - 'Skipped (no NotebookExecutionRoleName provided)'
+
+  # ----- Ready-to-paste snippet for the notebook "Create common objects" cell -----
+  NotebookConfigSnippet:
+    Description: >
+      Copy-paste this block into the notebook configuration cell, replacing the
+      matching placeholder assignments.
+    Value: !Sub |
+      s3_bucket = '${ModelDataBucket}'
+      container_registry_url_prefix = '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com'
+      ecs_fargate_task_execution_role = '${ECSTaskExecutionRole.Arn}'
+      ecs_fargate_task_role = '${ECSTaskRole.Arn}'
+      ecs_fargate_task_subnet_list = ['${PublicSubnet}']
+      ecs_fargate_task_security_group_list = ['${ECSTaskSecurityGroup}']

@@ -2,6 +2,70 @@
 
 Deploy the trained XGBoost California Housing model as a scalable inference API on Amazon ECS Fargate behind an Application Load Balancer.
 
+## Replicating in a New AWS Account (End-to-End)
+
+The full flow has two stages. Stage 1 provisions what the **notebook** needs to run; stage 2 hosts the **trained model** as a production API.
+
+```
+Stage 1 (once)        Stage 2 (after training)
+setup-prerequisites.sh  ─►  run notebook  ─►  deploy.sh
+   │                          │                  │
+   ▼                          ▼                  ▼
+S3 bucket, IAM roles,     trains model      builds image, pushes to ECR,
+VPC/subnet/SG             to S3             deploys ALB + ECS service
+```
+
+### Stage 1 — Provision notebook prerequisites (one command)
+
+Instead of manually creating an S3 bucket, IAM roles, a VPC/subnet, and a security group, run:
+
+```bash
+cd deployment
+./setup-prerequisites.sh --region us-east-1
+```
+
+This deploys the `notebook-prerequisites.yaml` CloudFormation stack and prints a ready-to-paste block, for example:
+
+```python
+s3_bucket = 'ml-nb-prereq-123456789012-us-east-1'
+container_registry_url_prefix = '123456789012.dkr.ecr.us-east-1.amazonaws.com'
+ecs_fargate_task_execution_role = 'arn:aws:iam::123456789012:role/ml-nb-prereq-ecs-task-execution-role'
+ecs_fargate_task_role = 'arn:aws:iam::123456789012:role/ml-nb-prereq-ecs-task-role'
+ecs_fargate_task_subnet_list = ['subnet-0abc123def456']
+ecs_fargate_task_security_group_list = ['sg-0abc123def456']
+```
+
+The same values are also written to `deployment/notebook-config.generated.txt`. Paste them into the notebook's "Create common objects" cell, replacing the `<Specify ...>` placeholders.
+
+**Options:**
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--region` | AWS CLI default | AWS region |
+| `--stack-name` | `ml-notebook-prereqs` | CloudFormation stack name |
+| `--resource-prefix` | `ml-nb-prereq` | Name prefix for created resources (also the S3 bucket prefix) |
+| `--inbound-cidr` | `0.0.0.0/0` | CIDR allowed to reach the task on port 80. Use `YOUR_IP/32` to restrict |
+| `--container-port` | `80` | Container listen port |
+| `--teardown` | — | Delete the prerequisites stack (empties the versioned S3 bucket first) |
+
+> **Security note:** the default `--inbound-cidr 0.0.0.0/0` opens the task's port to the public internet for easy testing. For a tighter setup, pass your public IP: `--inbound-cidr $(curl -s ifconfig.me)/32`.
+
+### Stage 2 — Train, then deploy
+
+1. Run the notebook end-to-end (it trains the model and uploads the artifact to the S3 bucket from stage 1).
+2. Deploy the hosting stack with `deploy.sh` (see [Quick Start](#quick-start) below).
+
+### Tearing everything down
+
+```bash
+# Stage 2 hosting stack + ECR repo (see Cleanup section)
+aws cloudformation delete-stack --stack-name ml-inference --region us-east-1
+
+# Stage 1 prerequisites (empties the S3 bucket, then deletes the stack)
+./setup-prerequisites.sh --teardown --region us-east-1
+```
+
+
 ## Architecture
 
 ```
@@ -152,7 +216,9 @@ Scale to zero by setting `--desired-count 0` when not in use, or delete the stac
 
 | File | Purpose |
 |------|---------|
+| `notebook-prerequisites.yaml` | Stage 1 template: S3 bucket, ECS IAM roles, VPC/subnet/security group the notebook needs |
+| `setup-prerequisites.sh` | One-command provisioning of the notebook prerequisites; prints copy-paste notebook values |
 | `Dockerfile` | Container image definition (Amazon Linux 2023 + Flask server + model) |
-| `cloudformation.yaml` | Full infrastructure template (VPC, ALB, ECS, IAM, Auto Scaling) |
-| `deploy.sh` | One-command deployment script |
+| `cloudformation.yaml` | Stage 2 template: full hosting infrastructure (VPC, ALB, ECS, IAM, Auto Scaling) |
+| `deploy.sh` | One-command build/push/deploy script for hosting the trained model |
 | `README.md` | This file |

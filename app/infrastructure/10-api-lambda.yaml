@@ -1,0 +1,371 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  API layer + Lambda compute backend for the multi-model inference API.
+  Provisions the submit/status API Lambda behind a PRIVATE Amazon API Gateway
+  REST API (accessible only through an execute-api interface VPC endpoint), the
+  Lambda SQS-consumer worker with partial-batch failure reporting, their IAM
+  roles, and a per-environment stage with access logging to the custom log
+  group created in the core stack.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: inference
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, qa, prod]
+
+  CodeS3Bucket:
+    Type: String
+    Description: S3 bucket holding the packaged backend .zip artifact.
+  CodeS3Key:
+    Type: String
+    Default: backend/backend.zip
+    Description: S3 key of the packaged backend .zip artifact.
+
+  HeavyDepsLayerArn:
+    Type: String
+    Default: ''
+    Description: >
+      Optional Lambda layer ARN providing numpy (and optionally
+      xgboost/statsmodels) for the Lambda worker. Leave empty if the worker only
+      serves the weighted/arima/sarima models with dependencies in the zip, or
+      if you package the worker as a container image instead.
+
+  LambdaMemoryMb:
+    Type: Number
+    Default: 1024
+    MinValue: 1024
+    Description: Lambda memory (spec requires at least 1024 MB).
+
+  LambdaTimeoutSeconds:
+    Type: Number
+    Default: 120
+
+  WorkerMaxConcurrency:
+    Type: Number
+    Default: 20
+    Description: Max concurrent Lambda worker invocations from the SQS mapping.
+
+Conditions:
+  HasLayer: !Not [!Equals [!Ref HeavyDepsLayerArn, '']]
+
+Resources:
+  # ============================================================
+  # Shared Lambda networking + IAM
+  # ============================================================
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Egress-only SG for the inference Lambdas in the VPC.
+      VpcId:
+        Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-VpcId
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound (reaches VPC endpoints and NAT)
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-${Environment}-lambda-sg
+
+  ApiLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: api-lambda-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DynamoWrite
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-RequestsTableArn
+              - Sid: SqsSend
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource:
+                  - Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-LambdaQueueArn
+                  - Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-EcsQueueArn
+              - Sid: KmsUse
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-KmsKeyArn
+
+  WorkerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: worker-lambda-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DynamoWrite
+                Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-RequestsTableArn
+              - Sid: SqsConsume
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-LambdaQueueArn
+              - Sid: KmsUse
+                Effect: Allow
+                Action: [kms:Decrypt, kms:GenerateDataKey]
+                Resource:
+                  Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-KmsKeyArn
+              - Sid: ModelReadOptional
+                Effect: Allow
+                Action: [s3:GetObject]
+                Resource: !Sub arn:aws:s3:::${EnvironmentName}-*/*
+
+  # ============================================================
+  # API Lambda (submit + status + catalog)
+  # ============================================================
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${EnvironmentName}-${Environment}-api
+      Runtime: python3.12
+      Architectures: [arm64]
+      Handler: backend.api.handler.lambda_handler
+      MemorySize: !Ref LambdaMemoryMb
+      Timeout: !Ref LambdaTimeoutSeconds
+      Role: !GetAtt ApiLambdaRole.Arn
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref CodeS3Key
+      VpcConfig:
+        SecurityGroupIds: [!Ref LambdaSecurityGroup]
+        SubnetIds: !Split
+          - ','
+          - Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-PrivateSubnets
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          REQUESTS_TABLE_NAME:
+            Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-RequestsTableName
+          LAMBDA_QUEUE_URL:
+            Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-LambdaQueueUrl
+          ECS_QUEUE_URL:
+            Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-EcsQueueUrl
+          LOG_LEVEL: INFO
+
+  # ============================================================
+  # Lambda worker (SQS consumer)
+  # ============================================================
+  WorkerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${EnvironmentName}-${Environment}-lambda-worker
+      Runtime: python3.12
+      Architectures: [arm64]
+      Handler: backend.lambda_worker.handler.lambda_handler
+      MemorySize: !Ref LambdaMemoryMb
+      Timeout: !Ref LambdaTimeoutSeconds
+      Role: !GetAtt WorkerLambdaRole.Arn
+      Layers: !If [HasLayer, [!Ref HeavyDepsLayerArn], !Ref 'AWS::NoValue']
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref CodeS3Key
+      VpcConfig:
+        SecurityGroupIds: [!Ref LambdaSecurityGroup]
+        SubnetIds: !Split
+          - ','
+          - Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-PrivateSubnets
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          REQUESTS_TABLE_NAME:
+            Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-RequestsTableName
+          MODEL_DIR: /opt/models
+          LOG_LEVEL: INFO
+
+  WorkerEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn:
+        Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-LambdaQueueArn
+      FunctionName: !Ref WorkerFunction
+      BatchSize: 10
+      MaximumBatchingWindowInSeconds: 5
+      FunctionResponseTypes: [ReportBatchItemFailures]
+      ScalingConfig:
+        MaximumConcurrency: !Ref WorkerMaxConcurrency
+
+  # ============================================================
+  # Private REST API Gateway
+  # ============================================================
+  ExecuteApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId:
+        Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.execute-api
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Split
+        - ','
+        - Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-PrivateSubnets
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-VpceSgId
+
+  # API Gateway needs an account-level CloudWatch Logs role for access/execution
+  # logging. This is a singleton per account+region; if you already manage it
+  # elsewhere, remove this resource and the Account resource below.
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: apigateway.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  RestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub ${EnvironmentName}-${Environment}-api
+      Description: Multi-model inference API (private).
+      EndpointConfiguration:
+        Types: [PRIVATE]
+        VpcEndpointIds: [!Ref ExecuteApiEndpoint]
+      Policy:
+        Version: '2012-10-17'
+        Statement:
+          # Only allow calls that arrive through our interface endpoint.
+          - Effect: Deny
+            Principal: '*'
+            Action: execute-api:Invoke
+            Resource: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:*/*
+            Condition:
+              StringNotEquals:
+                aws:sourceVpce: !Ref ExecuteApiEndpoint
+          - Effect: Allow
+            Principal: '*'
+            Action: execute-api:Invoke
+            Resource: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:*/*
+
+  ProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !GetAtt RestApi.RootResourceId
+      PathPart: '{proxy+}'
+
+  ProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref ProxyResource
+      HttpMethod: ANY
+      AuthorizationType: AWS_IAM
+      RequestParameters:
+        method.request.path.proxy: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations
+
+  RootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !GetAtt RestApi.RootResourceId
+      HttpMethod: ANY
+      AuthorizationType: AWS_IAM
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiFunction.Arn}/invocations
+
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*/*/*
+
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: [ProxyMethod, RootMethod]
+    Properties:
+      RestApiId: !Ref RestApi
+
+  Stage:
+    Type: AWS::ApiGateway::Stage
+    DependsOn: ApiGatewayAccount
+    Properties:
+      RestApiId: !Ref RestApi
+      DeploymentId: !Ref Deployment
+      StageName: !Ref Environment
+      TracingEnabled: true
+      AccessLogSetting:
+        DestinationArn:
+          Fn::ImportValue: !Sub ${EnvironmentName}-${Environment}-ApiAccessLogGroupArn
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp",
+          "requestTime":"$context.requestTime","httpMethod":"$context.httpMethod",
+          "routeKey":"$context.resourcePath","status":"$context.status",
+          "protocol":"$context.protocol","responseLength":"$context.responseLength",
+          "integrationLatency":"$context.integrationLatency"}
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          LoggingLevel: INFO
+          DataTraceEnabled: false
+          MetricsEnabled: true
+          ThrottlingBurstLimit: 200
+          ThrottlingRateLimit: 100
+
+Outputs:
+  ApiId:
+    Value: !Ref RestApi
+  ApiFunctionArn:
+    Value: !GetAtt ApiFunction.Arn
+  WorkerFunctionArn:
+    Value: !GetAtt WorkerFunction.Arn
+  PrivateInvokeUrl:
+    Description: Base invoke URL (reachable only from within the VPC via the endpoint).
+    Value: !Sub https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/api
+  ExecuteApiEndpointId:
+    Value: !Ref ExecuteApiEndpoint
