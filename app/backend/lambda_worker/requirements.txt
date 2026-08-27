@@ -1,8 +1,13 @@
 # Lambda worker dependencies. boto3 is provided by the runtime.
-# numpy is needed by the weighted model at prediction time.
-numpy>=1.26,<3
-# The XGBoost and statsmodels wheels are large; for the Lambda backend they are
-# best delivered as a Lambda layer or via a container image rather than a zip.
-# Uncomment if you package this function as a container image:
-# xgboost==2.1.4
-# statsmodels>=0.14
+#
+# The default zip package needs NO third-party packages: the weighted model is
+# pure-Python, and the arima/sarima routes use the built-in naive forecast when
+# no artifact is baked in. So the Lambda backend serves weighted/arima/sarima
+# out of the box.
+#
+# To also serve real (artifact-backed) xgboost/arima/sarima on the Lambda
+# backend, package this function as a container image (see Dockerfile) or attach
+# a layer providing the runtimes below:
+#   numpy>=1.26,<3
+#   xgboost==2.1.4
+#   statsmodels>=0.14,<0.15

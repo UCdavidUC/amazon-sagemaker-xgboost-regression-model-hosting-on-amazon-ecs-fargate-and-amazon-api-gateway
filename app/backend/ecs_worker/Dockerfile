@@ -6,7 +6,7 @@
 #   docker buildx build --platform linux/arm64 \
 #     -f backend/ecs_worker/Dockerfile -t inference-ecs-worker app/
 #
-# Model artifacts (e.g. xgboost-model.pkl, sarima-model.pkl) can be baked into
+# Model artifacts (e.g. xgboost-model.ubj, sarima-model.pkl) can be baked into
 # /opt/models at build time or mounted/synced at runtime from the model S3
 # bucket (MODEL_BUCKET / MODEL_PREFIX).
 FROM public.ecr.aws/docker/library/python:3.12-slim
@@ -33,8 +33,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY backend /app/backend
 
 # Baked-in model artifacts (optional). Populate backend/ecs_worker/models/ with
-# <model>-model.pkl files (e.g. xgboost-model.pkl) before building; the folder
-# may be empty for the fallback (weighted/arima/sarima) models.
+# model artifacts (e.g. xgboost-model.ubj, sarima-model.pkl) before building;
+# the folder may be empty for the fallback (weighted/arima/sarima) models.
 RUN mkdir -p /opt/models
 COPY backend/ecs_worker/models/ /opt/models/
 

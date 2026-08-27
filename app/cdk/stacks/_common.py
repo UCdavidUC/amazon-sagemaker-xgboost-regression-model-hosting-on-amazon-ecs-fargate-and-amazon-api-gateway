@@ -15,6 +15,9 @@ LAMBDA_ASSET_EXCLUDES = [
     "data",
     "frontend",
     "notebooks",
+    # Baked ECS model artifacts are large and only used by the ECS image
+    # (the Lambda worker reads /opt/models, not this path) - keep them out.
+    "backend/ecs_worker/models",
     "*.md",
     "__pycache__",
     "**/__pycache__",

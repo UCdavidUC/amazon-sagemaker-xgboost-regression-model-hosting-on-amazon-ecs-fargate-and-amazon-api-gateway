@@ -1,7 +1,11 @@
 # ECS Fargate worker dependencies.
 boto3>=1.34
 numpy>=1.26,<3
-# Enable the heavy model runtimes on the ECS backend (Graviton/arm64 wheels).
+# XGBoost artifacts are loaded from the portable save_model format (.ubj/.json),
+# which is forward-compatible across versions, so the serving version does not
+# have to match the SageMaker training version exactly.
 xgboost==2.1.4
-statsmodels>=0.14
+# statsmodels pickles ARE version-sensitive; pin to the 0.14 line to match the
+# SageMaker training environment and avoid load failures on a 0.15+ bump.
+statsmodels>=0.14,<0.15
 pandas>=2.0

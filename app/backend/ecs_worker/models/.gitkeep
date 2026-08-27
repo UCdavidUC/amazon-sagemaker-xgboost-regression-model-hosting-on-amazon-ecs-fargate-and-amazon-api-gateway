@@ -1,5 +1,7 @@
 # Staging directory for baked-in model artifacts.
-# Place <model>-model.pkl files here before building the ECS worker image, e.g.
-#   xgboost-model.pkl   (from the SageMaker training job in step 2)
+# Place model files here before building the ECS worker image, e.g.
+#   xgboost-model.ubj   (portable XGBoost save_model format, from step 2)
 #   sarima-model.pkl    (optional)
-# Actual .pkl artifacts are git-ignored and must not be committed.
+#   arima-model.pkl     (optional)
+# The worker also accepts a legacy xgboost-model.pkl / xgboost-model.json.
+# Actual artifacts are git-ignored and must not be committed.
