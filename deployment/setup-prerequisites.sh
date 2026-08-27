@@ -64,6 +64,22 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------
+# Normalize the notebook role
+# ---------------------------
+# IAM managed-policy Roles expects a role NAME, not an ARN. Accept either form:
+# strip any ARN prefix (everything up to and including the last '/') and any
+# surrounding whitespace so 'arn:aws:iam::123:role/path/MyRole' -> 'MyRole'.
+if [[ -n "$NOTEBOOK_ROLE" ]]; then
+    NOTEBOOK_ROLE="${NOTEBOOK_ROLE##*/}"
+    NOTEBOOK_ROLE="${NOTEBOOK_ROLE//[[:space:]]/}"
+    if [[ ! "$NOTEBOOK_ROLE" =~ ^[a-zA-Z0-9+=,.@_-]+$ ]]; then
+        echo "Error: --notebook-role must be a role NAME (letters, numbers, +=,.@_-),"
+        echo "       not an ARN or a value with other characters. Got: '${NOTEBOOK_ROLE}'"
+        exit 1
+    fi
+fi
+
+# ---------------------------
 # Preconditions
 # ---------------------------
 if ! command -v aws > /dev/null 2>&1; then
