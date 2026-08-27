@@ -32,8 +32,11 @@ RUN pip install --no-cache-dir --upgrade pip \
 # Copy the shared backend package.
 COPY backend /app/backend
 
-# Place for baked-in model artifacts (optional).
+# Baked-in model artifacts (optional). Populate backend/ecs_worker/models/ with
+# <model>-model.pkl files (e.g. xgboost-model.pkl) before building; the folder
+# may be empty for the fallback (weighted/arima/sarima) models.
 RUN mkdir -p /opt/models
+COPY backend/ecs_worker/models/ /opt/models/
 
 # Run as a non-root user.
 RUN useradd --create-home --uid 10001 appuser \
