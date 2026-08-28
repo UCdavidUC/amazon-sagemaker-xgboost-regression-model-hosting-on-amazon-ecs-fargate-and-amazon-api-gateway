@@ -34,12 +34,23 @@ dictConfig({
 app = Flask(__name__)
 
 
-## Load the model object from the pickle file
-model_pickle_file_path = os.environ.get('MODEL_PICKLE_FILE_PATH')
-app.logger.debug('Loading the model object from the pickle file \'{}\'...'.format(model_pickle_file_path))
-with open(model_pickle_file_path, 'rb') as model_pickle_file:
-    model = pickle.load(model_pickle_file)
-app.logger.debug('Completed loading the model object from the pickle file.')
+## Load the trained model, tolerant of the artifact format.
+## SageMaker's built-in XGBoost may write the model in its native format
+## (newer containers) or as a pickled Booster (older ones). Try the native
+## loader first, then fall back to pickle - a raw pickle.load on a native model
+## fails with "unpickling stack underflow".
+model_file_path = os.environ.get('MODEL_PICKLE_FILE_PATH')
+app.logger.debug('Loading the model object from \'{}\'...'.format(model_file_path))
+try:
+    model = xgb.Booster()
+    model.load_model(model_file_path)
+    app.logger.debug('Loaded model via native XGBoost format.')
+except Exception:
+    with open(model_file_path, 'rb') as model_file:
+        loaded = pickle.load(model_file)
+    model = loaded.get_booster() if hasattr(loaded, 'get_booster') else loaded
+    app.logger.debug('Loaded model via pickle.')
+app.logger.debug('Completed loading the model object.')
 
 
 ## Perform prediction

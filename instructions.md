@@ -42,7 +42,7 @@ print(get_execution_role())   # take the part after 'role/'
 
 ```bash
 export AWS_REGION=us-east-1
-export NOTEBOOK_ROLE=AmazonSageMaker-ExecutionRole-Example   # from above
+export NOTEBOOK_ROLE=arn:aws:iam::853255353902:role/service-role/AmazonSageMaker-ExecutionRole-20260803T175042   # from above
 
 ./deployment/setup-prerequisites.sh \
   --region "$AWS_REGION" \
@@ -54,8 +54,8 @@ The script deploys the stack (default name `ml-notebook-prereqs`) and writes the
 paste-ready values to `deployment/notebook-config.generated.txt`, for example:
 
 ```python
-s3_bucket = 'ml-nb-prereq-123456789012-us-east-1'
-container_registry_url_prefix = '123456789012.dkr.ecr.us-east-1.amazonaws.com'
+s3_bucket = 'ml-nb-prereq-853255353902-us-east-1'
+container_registry_url_prefix = '853255353902.dkr.ecr.us-east-1.amazonaws.com'
 ecs_fargate_task_execution_role = 'arn:aws:iam::123456789012:role/ml-nb-prereq-ecs-task-execution-role'
 ecs_fargate_task_role = 'arn:aws:iam::123456789012:role/ml-nb-prereq-ecs-task-role'
 ecs_fargate_task_subnet_list = ['subnet-0abc123def456']
