@@ -42,7 +42,8 @@ print(get_execution_role())   # take the part after 'role/'
 
 ```bash
 export AWS_REGION=us-east-1
-export NOTEBOOK_ROLE=AmazonSageMaker-ExecutionRole-Example   # from above
+# Use the role name or full ARN printed by the notebook; the setup script accepts both.
+export NOTEBOOK_ROLE=AmazonSageMaker-ExecutionRole-Example   # replace with your role
 
 ./deployment/setup-prerequisites.sh \
   --region "$AWS_REGION" \
